@@ -8,6 +8,7 @@ import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Toolti
 import toast from 'react-hot-toast'
 
 // Component to convert coordinates to location name for old records
+// Uses same logic as backend geocoding for consistency
 const LocationConverter = ({ coordinates }) => {
   const [locationName, setLocationName] = useState(null)
   const [converting, setConverting] = useState(true)
@@ -34,46 +35,138 @@ const LocationConverter = ({ coordinates }) => {
           const addr = data.address
           const locationParts = []
           
-          // Use same logic as backend geocoding
-          const isWrongArea = (str) => str && /shivajinagar|pune district|district/i.test(str.toLowerCase())
-          const hasLocationKeyword = (str) => str && /naghegaon|narhegaon|navle|bridge|gaon|nagar|wadi/i.test(str.toLowerCase())
+          // Helper functions (same as backend)
+          const isGenericOrWrong = (str) => {
+            if (!str) return true
+            const lower = str.toLowerCase()
+            return /^(pune|maharashtra|india|pin|district|pune district)$/i.test(str) ||
+                   /shivajinagar|pune district|district/i.test(lower) ||
+                   str.length < 3
+          }
           
-          // Parse display_name first
+          const isCityName = (str) => {
+            if (!str) return false
+            return /^(pune|nagpur|mumbai|delhi|bangalore|hyderabad|chennai|kolkata)$/i.test(str)
+          }
+          
+          const isRoad = (str) => {
+            if (!str) return false
+            const lower = str.toLowerCase()
+            return /road|street|avenue|lane|drive|boulevard|highway/i.test(lower)
+          }
+          
+          // PRIORITY 1: Parse display_name FIRST - it's usually the most accurate
           if (data.display_name) {
             const displayParts = data.display_name.split(',').map(p => p.trim())
+            
+            // Find the most specific location name (usually first or second part)
             for (let i = 0; i < Math.min(displayParts.length, 5); i++) {
               const part = displayParts[i]
-              const isGeneric = part.match(/^(Pune|Maharashtra|India|PIN|District|Pune District)$/i)
-              if (!isWrongArea(part) && !isGeneric && part.length > 2) {
-                if (hasLocationKeyword(part) || locationParts.length === 0) {
-                  locationParts.push(part)
-                  if (hasLocationKeyword(part)) break
-                }
+              
+              // Skip if generic, city name, or road
+              if (isGenericOrWrong(part) || isCityName(part) || isRoad(part)) {
+                continue
+              }
+              
+              // This is likely the specific location we want
+              if (!locationParts.includes(part)) {
+                locationParts.push(part)
+                // Usually the first meaningful part is the most specific
+                if (i < 2) break
               }
             }
           }
           
-          // Add from address components
-          if (locationParts.length === 0 || !hasLocationKeyword(locationParts.join(' '))) {
-            if (addr.quarter && !isWrongArea(addr.quarter)) locationParts.unshift(addr.quarter)
-            else if (addr.neighbourhood && !isWrongArea(addr.neighbourhood)) locationParts.unshift(addr.neighbourhood)
-            else if (addr.suburb && !isWrongArea(addr.suburb)) locationParts.unshift(addr.suburb)
-            else if (addr.village && !isWrongArea(addr.village)) locationParts.unshift(addr.village)
+          // PRIORITY 2: Extract from address components (if display_name didn't give us good result)
+          const locationFields = ['hamlet', 'quarter', 'neighbourhood', 'suburb', 'residential', 'village', 'locality']
+          
+          for (const field of locationFields) {
+            if (addr[field] && !isGenericOrWrong(addr[field]) && !locationParts.includes(addr[field])) {
+              // Only add if we don't have a good location yet, or if this is more specific
+              if (locationParts.length === 0 || field === 'hamlet' || field === 'quarter') {
+                locationParts.unshift(addr[field])
+                break // Take the most specific one
+              }
+            }
           }
           
-          // Add road/landmark
-          if (addr.road && (addr.road.toLowerCase().includes('bridge') || hasLocationKeyword(addr.road))) {
-            if (!locationParts.includes(addr.road)) locationParts.unshift(addr.road)
+          // PRIORITY 3: Add road/landmark if it's significant
+          if (addr.road && !isGenericOrWrong(addr.road)) {
+            const roadName = addr.road
+            // Only add if it's a landmark or we don't have location yet
+            if (roadName.toLowerCase().includes('bridge') || 
+                roadName.toLowerCase().includes('highway') ||
+                locationParts.length === 0) {
+              if (!locationParts.includes(roadName)) {
+                locationParts.unshift(roadName)
+              }
+            }
           }
           
-          // Add city
-          const cityName = addr.city || addr.town
-          if (cityName && !isWrongArea(cityName) && locationParts.length > 0 && !locationParts.includes(cityName)) {
-            locationParts.push(cityName)
+          // PRIORITY 4: Determine correct city name
+          let cityName = null
+          
+          // First, check display_name for city (most reliable)
+          if (data.display_name) {
+            const displayLower = data.display_name.toLowerCase()
+            if (displayLower.includes('pune')) {
+              cityName = 'Pune'
+            } else if (displayLower.includes('nagpur')) {
+              cityName = 'Nagpur'
+            } else if (displayLower.includes('mumbai')) {
+              cityName = 'Mumbai'
+            }
           }
           
+          // If not found in display_name, check address fields
+          if (!cityName) {
+            if (addr.city && !isGenericOrWrong(addr.city)) {
+              cityName = addr.city
+            } else if (addr.town && !isGenericOrWrong(addr.town)) {
+              cityName = addr.town
+            } else if (addr.municipality && !isGenericOrWrong(addr.municipality)) {
+              cityName = addr.municipality
+            }
+          }
+          
+          // Validate: If display_name mentions Pune, always use Pune
+          if (data.display_name && data.display_name.toLowerCase().includes('pune')) {
+            if (!cityName || cityName.toLowerCase() !== 'pune') {
+              cityName = 'Pune'
+            }
+          }
+          
+          // Add city if we have location and city is valid
+          if (locationParts.length > 0 && cityName) {
+            const cityAlreadyIncluded = locationParts.some(part => 
+              part.toLowerCase() === cityName.toLowerCase() ||
+              part.toLowerCase().includes(cityName.toLowerCase()) || 
+              cityName.toLowerCase().includes(part.toLowerCase())
+            )
+            
+            if (!cityAlreadyIncluded) {
+              locationParts.push(cityName)
+            }
+          }
+          
+          // Return final location string
           if (locationParts.length > 0) {
-            setLocationName(locationParts.join(', '))
+            const finalParts = locationParts.slice(0, 3)
+            setLocationName(finalParts.join(', '))
+          } else if (data.display_name) {
+            // Fallback: Use first 2 meaningful parts from display_name
+            const parts = data.display_name.split(',').map(p => p.trim())
+            const meaningfulParts = parts.filter(p => 
+              !isGenericOrWrong(p) && !isCityName(p)
+            ).slice(0, 2)
+            
+            if (meaningfulParts.length > 0) {
+              // Add city if available
+              if (cityName && !meaningfulParts.includes(cityName)) {
+                meaningfulParts.push(cityName)
+              }
+              setLocationName(meaningfulParts.join(', '))
+            }
           }
         }
       } catch (error) {
@@ -364,67 +457,130 @@ const Attendance = () => {
               console.log('[FRONTEND_GEOCODING] Address data:', addr)
               const locationParts = []
               
-              // Priority: Most specific location first
-              // Check quarter, neighbourhood, suburb (smallest areas first)
-              if (addr.quarter) {
-                locationParts.push(addr.quarter)
-              } else if (addr.neighbourhood) {
-                locationParts.push(addr.neighbourhood)
-              } else if (addr.suburb) {
-                locationParts.push(addr.suburb)
-              } else if (addr.residential) {
-                locationParts.push(addr.residential)
-              } else if (addr.village) {
-                locationParts.push(addr.village)
-              } else if (addr.locality) {
-                locationParts.push(addr.locality)
+              // Helper function to check if string contains generic/wrong areas (same as backend)
+              const isGenericOrWrong = (str) => {
+                if (!str) return true
+                const lower = str.toLowerCase()
+                return /^(pune|maharashtra|india|pin|district|pune district)$/i.test(str) ||
+                       /shivajinagar|pune district|district/i.test(lower) ||
+                       str.length < 3
               }
               
-              // Add road/landmark if available (bridges, major roads)
-              if (addr.road) {
+              // Helper functions (same as backend)
+              const isCityName = (str) => {
+                if (!str) return false
+                return /^(pune|nagpur|mumbai|delhi|bangalore|hyderabad|chennai|kolkata)$/i.test(str)
+              }
+              
+              const isRoad = (str) => {
+                if (!str) return false
+                const lower = str.toLowerCase()
+                return /road|street|avenue|lane|drive|boulevard|highway/i.test(lower)
+              }
+              
+              // PRIORITY 1: Parse display_name FIRST - it's usually the most accurate
+              if (data.display_name) {
+                const displayParts = data.display_name.split(',').map(p => p.trim())
+                
+                // Find the most specific location name (usually first or second part)
+                for (let i = 0; i < Math.min(displayParts.length, 5); i++) {
+                  const part = displayParts[i]
+                  
+                  // Skip if generic, city name, or road
+                  if (isGenericOrWrong(part) || isCityName(part) || isRoad(part)) {
+                    continue
+                  }
+                  
+                  // This is likely the specific location we want
+                  if (!locationParts.includes(part)) {
+                    locationParts.push(part)
+                    // Usually the first meaningful part is the most specific
+                    if (i < 2) break
+                  }
+                }
+              }
+              
+              // PRIORITY 2: Extract from address components (if display_name didn't give us good result)
+              const locationFields = ['hamlet', 'quarter', 'neighbourhood', 'suburb', 'residential', 'village', 'locality']
+              
+              for (const field of locationFields) {
+                if (addr[field] && !isGenericOrWrong(addr[field]) && !locationParts.includes(addr[field])) {
+                  // Only add if we don't have a good location yet, or if this is more specific
+                  if (locationParts.length === 0 || field === 'hamlet' || field === 'quarter') {
+                    locationParts.unshift(addr[field])
+                    break // Take the most specific one
+                  }
+                }
+              }
+              
+              // PRIORITY 3: Add road/landmark if it's significant
+              if (addr.road && !isGenericOrWrong(addr.road)) {
                 const roadName = addr.road
-                // Include road for landmarks or if no specific area found
+                // Only add if it's a landmark or we don't have location yet
                 if (roadName.toLowerCase().includes('bridge') || 
-                    roadName.toLowerCase().includes('road') ||
-                    roadName.toLowerCase().includes('street') ||
-                    roadName.toLowerCase().includes('nagar') ||
-                    roadName.toLowerCase().includes('gaon') ||
-                    roadName.toLowerCase().includes('wadi') ||
+                    roadName.toLowerCase().includes('highway') ||
                     locationParts.length === 0) {
                   if (!locationParts.includes(roadName)) {
-                    locationParts.push(roadName)
+                    locationParts.unshift(roadName)
                   }
                 }
               }
               
-              // If still no specific location, try parsing display_name
-              if (locationParts.length === 0 && data.display_name) {
-                const parts = data.display_name.split(',').map(p => p.trim())
-                // Extract first meaningful part (most specific)
-                for (let i = 0; i < Math.min(3, parts.length); i++) {
-                  const part = parts[i]
-                  if (!part.match(/^(Pune|Maharashtra|India|PIN|District)$/i)) {
-                    locationParts.push(part)
-                    break
-                  }
+              // PRIORITY 4: Determine correct city name
+              let cityName = null
+              
+              // First, check display_name for city (most reliable)
+              if (data.display_name) {
+                const displayLower = data.display_name.toLowerCase()
+                if (displayLower.includes('pune')) {
+                  cityName = 'Pune'
+                } else if (displayLower.includes('nagpur')) {
+                  cityName = 'Nagpur'
+                } else if (displayLower.includes('mumbai')) {
+                  cityName = 'Mumbai'
                 }
               }
               
-              // Add city for context only if we have a specific location
-              const cityName = addr.city || addr.town || addr.county
-              if (cityName && !locationParts.includes(cityName) && locationParts.length > 0) {
-                locationParts.push(cityName)
+              // If not found in display_name, check address fields
+              if (!cityName) {
+                if (addr.city && !isGenericOrWrong(addr.city)) {
+                  cityName = addr.city
+                } else if (addr.town && !isGenericOrWrong(addr.town)) {
+                  cityName = addr.town
+                } else if (addr.municipality && !isGenericOrWrong(addr.municipality)) {
+                  cityName = addr.municipality
+                }
               }
               
+              // Validate: If display_name mentions Pune, always use Pune
+              if (data.display_name && data.display_name.toLowerCase().includes('pune')) {
+                if (!cityName || cityName.toLowerCase() !== 'pune') {
+                  cityName = 'Pune'
+                }
+              }
+              
+              // Add city if we have location and city is valid
+              if (locationParts.length > 0 && cityName) {
+                const cityAlreadyIncluded = locationParts.some(part => 
+                  part.toLowerCase() === cityName.toLowerCase() ||
+                  part.toLowerCase().includes(cityName.toLowerCase()) || 
+                  cityName.toLowerCase().includes(part.toLowerCase())
+                )
+                
+                if (!cityAlreadyIncluded) {
+                  locationParts.push(cityName)
+                }
+              }
+              
+              // Return final location string (limit to max 3 parts for readability)
               if (locationParts.length > 0) {
-                locationName = locationParts.join(', ')
+                const finalParts = locationParts.slice(0, 3)
+                locationName = finalParts.join(', ')
                 console.log('[FRONTEND_GEOCODING] Resolved:', locationName)
               } else if (data.display_name) {
-                // Fallback to display_name
+                // Fallback: Try display_name first 2 parts (filtered)
                 const parts = data.display_name.split(',').map(p => p.trim())
-                const meaningfulParts = parts.filter(p => 
-                  !p.match(/^(Maharashtra|India|District)$/i)
-                ).slice(0, 2)
+                const meaningfulParts = parts.filter(p => !isGenericOrWrong(p)).slice(0, 2)
                 if (meaningfulParts.length > 0) {
                   locationName = meaningfulParts.join(', ')
                 }
@@ -622,6 +778,14 @@ const Attendance = () => {
       minute: '2-digit',
       second: '2-digit'
     })
+  }
+
+  const formatHoursToMinutes = (hours) => {
+    if (!hours || hours === 0) return '0h 0m'
+    const totalMinutes = Math.round(hours * 60)
+    const h = Math.floor(totalMinutes / 60)
+    const m = totalMinutes % 60
+    return `${h}h ${m}m`
   }
 
   return (
@@ -1874,9 +2038,9 @@ const Attendance = () => {
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="text-blue-100 text-sm font-medium mb-1">Total Hours</p>
-                      <p className="text-4xl font-bold">{parseFloat(employeeMonthlyAttendance.stats.totalWorkingHours).toFixed(1)}</p>
+                      <p className="text-4xl font-bold">{formatHoursToMinutes(parseFloat(employeeMonthlyAttendance.stats.totalWorkingHours || 0))}</p>
                       <p className="text-blue-200 text-xs mt-2">
-                        Avg: {employeeMonthlyAttendance.stats.averageWorkingHours} hrs/day
+                        Avg: {formatHoursToMinutes(parseFloat(employeeMonthlyAttendance.stats.averageWorkingHours || 0))}/day
                       </p>
                     </div>
                     <div className="bg-white bg-opacity-20 rounded-full p-4">
@@ -2116,9 +2280,9 @@ const Attendance = () => {
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                     <div>
-                      <span className="font-semibold">{record.totalWorkingHours?.toFixed(2) || 0} hrs</span>
+                      <span className="font-semibold">{formatHoursToMinutes(record.totalWorkingHours || 0)}</span>
                       {record.overtime > 0 && (
-                        <span className="ml-2 text-green-600 text-xs">(+{record.overtime.toFixed(2)} OT)</span>
+                        <span className="ml-2 text-green-600 text-xs">(+{formatHoursToMinutes(record.overtime)})</span>
                       )}
                     </div>
                   </td>

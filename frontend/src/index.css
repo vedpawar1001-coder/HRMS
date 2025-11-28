@@ -22,7 +22,7 @@
   }
   
   .card {
-    @apply bg-white rounded-lg shadow-md p-6;
+    @apply bg-white rounded-lg shadow-md p-4 sm:p-6;
   }
   
   .input {
@@ -50,5 +50,309 @@
 
 ::-webkit-scrollbar-thumb:hover {
   @apply bg-gray-500;
+}
+
+/* Responsive utilities - Mobile First Approach */
+/* Very small phones (iPhone SE, Galaxy Fold, etc.) - 320px to 374px */
+@media (max-width: 374px) {
+  .card {
+    @apply p-2.5;
+  }
+  
+  h1 {
+    @apply text-lg;
+  }
+  
+  h2 {
+    @apply text-base;
+  }
+  
+  h3 {
+    @apply text-sm;
+  }
+  
+  table {
+    font-size: 0.7rem;
+  }
+  
+  table th,
+  table td {
+    @apply px-1.5 py-1;
+  }
+  
+  .btn {
+    @apply px-2.5 py-1.5 text-xs;
+    min-height: 40px;
+  }
+  
+  /* Reduce spacing on very small screens */
+  .space-y-4 > * + * {
+    margin-top: 0.75rem;
+  }
+  
+  .space-y-6 > * + * {
+    margin-top: 1rem;
+  }
+}
+
+/* Small phones (iPhone 5/SE, etc.) - 375px to 474px */
+@media (min-width: 375px) and (max-width: 474px) {
+  .card {
+    @apply p-3;
+  }
+  
+  h1 {
+    @apply text-xl;
+  }
+  
+  h2 {
+    @apply text-lg;
+  }
+  
+  h3 {
+    @apply text-base;
+  }
+  
+  table {
+    font-size: 0.75rem;
+  }
+  
+  table th,
+  table td {
+    @apply px-2 py-1.5;
+  }
+  
+  .btn {
+    @apply px-3 py-1.5 text-sm;
+  }
+}
+
+/* Standard mobile phones (iPhone 6/7/8, iPhone X/11/12/13/14, etc.) - 375px to 640px */
+@media (min-width: 375px) and (max-width: 640px) {
+  .card {
+    @apply p-4;
+  }
+  
+  table {
+    font-size: 0.875rem;
+  }
+  
+  table th,
+  table td {
+    @apply px-3 py-2;
+  }
+  
+  /* Ensure modals are mobile-friendly */
+  .fixed.inset-0 {
+    padding: 0.75rem;
+  }
+  
+  /* Make text responsive */
+  h1 {
+    @apply text-2xl;
+  }
+  
+  h2 {
+    @apply text-xl;
+  }
+  
+  h3 {
+    @apply text-lg;
+  }
+  
+  /* Ensure buttons are touch-friendly */
+  button, .btn {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  
+  /* Improve form inputs on mobile */
+  .input, input, textarea, select {
+    font-size: 16px; /* Prevents zoom on iOS */
+  }
+}
+
+/* All mobile devices - common rules */
+@media (max-width: 640px) {
+  /* Ensure buttons are touch-friendly on all mobile sizes */
+  button, .btn, a.btn {
+    min-height: 44px;
+    min-width: 44px;
+    touch-action: manipulation; /* Prevents double-tap zoom */
+  }
+  
+  /* Improve form inputs on mobile */
+  .input, input[type="text"], input[type="email"], input[type="password"], 
+  input[type="number"], input[type="tel"], input[type="date"], 
+  textarea, select {
+    font-size: 16px; /* Prevents zoom on iOS */
+    -webkit-appearance: none;
+    appearance: none;
+  }
+  
+  /* Better tap targets */
+  a, button, [role="button"] {
+    -webkit-tap-highlight-color: rgba(0, 0, 0, 0.1);
+  }
+  
+  /* Prevent text size adjustment */
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+  
+  /* Ensure modals are mobile-friendly */
+  .fixed.inset-0 {
+    padding: 0.5rem;
+  }
+  
+  /* Better scrolling */
+  * {
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* Tablet optimizations */
+@media (min-width: 641px) and (max-width: 1024px) {
+  .card {
+    @apply p-5;
+  }
+  
+  /* Better spacing for tablets */
+  .container {
+    padding-left: 1.5rem;
+    padding-right: 1.5rem;
+  }
+}
+
+/* Ensure tables are scrollable on mobile and tablet */
+@media (max-width: 1024px) {
+  .overflow-x-auto {
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+  
+  table {
+    min-width: 640px;
+  }
+  
+  /* Better table wrapper */
+  .table-wrapper {
+    position: relative;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  
+  .table-wrapper::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 20px;
+    height: 100%;
+    background: linear-gradient(to right, transparent, rgba(0,0,0,0.05));
+    pointer-events: none;
+  }
+}
+
+/* Large screens optimizations */
+@media (min-width: 1280px) {
+  .container {
+    max-width: 1280px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+}
+
+/* Extra large screens */
+@media (min-width: 1536px) {
+  .container {
+    max-width: 1536px;
+  }
+}
+
+/* Landscape orientation adjustments for mobile */
+@media (max-height: 500px) and (orientation: landscape) and (max-width: 896px) {
+  .card {
+    @apply p-3;
+  }
+  
+  h1 {
+    @apply text-xl;
+  }
+  
+  h2 {
+    @apply text-lg;
+  }
+  
+  h3 {
+    @apply text-base;
+  }
+  
+  /* Reduce vertical spacing in landscape */
+  .space-y-6 > * + * {
+    margin-top: 1rem;
+  }
+  
+  .space-y-4 > * + * {
+    margin-top: 0.75rem;
+  }
+  
+  /* Compact tables in landscape */
+  table th,
+  table td {
+    @apply py-1.5;
+  }
+}
+
+/* Specific device optimizations */
+/* iPhone SE (375x667) and similar */
+@media (width: 375px) and (height: 667px) {
+  .card {
+    @apply p-3.5;
+  }
+}
+
+/* iPhone 12/13/14 Pro (390x844) */
+@media (width: 390px) {
+  .card {
+    @apply p-4;
+  }
+}
+
+/* iPhone 14 Pro Max (430x932) */
+@media (width: 430px) {
+  .card {
+    @apply p-4;
+  }
+}
+
+/* Samsung Galaxy S20/S21 (360x800) */
+@media (width: 360px) {
+  .card {
+    @apply p-3;
+  }
+}
+
+/* Pixel 5 (393x851) */
+@media (width: 393px) {
+  .card {
+    @apply p-4;
+  }
+}
+
+/* Print styles */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  
+  .card {
+    @apply shadow-none border;
+  }
+  
+  table {
+    page-break-inside: avoid;
+  }
 }
 

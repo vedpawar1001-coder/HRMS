@@ -59,8 +59,8 @@ router.post('/punch', protect, async (req, res) => {
       });
     }
     
-    // Auto-create employee profile if it doesn't exist (for employees and managers)
-    if (!req.user.employeeId && (req.user.role === 'employee' || req.user.role === 'manager')) {
+    // Auto-create employee profile if it doesn't exist (for employees, managers, and HR)
+    if (!req.user.employeeId && (req.user.role === 'employee' || req.user.role === 'manager' || req.user.role === 'hr')) {
       console.log(`[ATTENDANCE/PUNCH] Auto-creating employee profile for user: ${req.user.email}, role: ${req.user.role}`);
       try {
         // Get fresh user from database to ensure we have the latest data
@@ -72,20 +72,95 @@ router.post('/punch', protect, async (req, res) => {
           });
         }
         
-        // Create or get employee profile
-        await createOrGetEmployeeProfile(freshUser);
-        
-        // Refresh user object again to get updated employeeId
-        freshUser = await User.findById(req.user._id);
-        if (!freshUser) {
-          return res.status(401).json({ 
-            message: 'User session expired. Please login again.',
-            error: 'USER_NOT_FOUND'
-          });
+        // For HR users, check if they have an HR profile and use that data
+        if (freshUser.role === 'hr') {
+          const HR = require('../models/HR');
+          const hrProfile = await HR.findOne({ userId: freshUser._id });
+          
+          if (hrProfile) {
+            console.log(`[ATTENDANCE/PUNCH] HR profile found, creating Employee profile from HR data`);
+            
+            // Check if employee already exists with this email
+            const normalizedEmail = freshUser.email.toLowerCase().trim();
+            let employee = await Employee.findOne({ 
+              'personalInfo.email': { $regex: new RegExp(`^${normalizedEmail}$`, 'i') }
+            });
+            
+            if (!employee) {
+              // Create employee profile from HR profile data
+              const year = new Date().getFullYear();
+              let count = await Employee.countDocuments();
+              let employeeId = `EMP-${year}-${String(count + 1).padStart(5, '0')}`;
+              
+              // Check if employeeId already exists
+              let exists = await Employee.findOne({ employeeId });
+              let attempts = 0;
+              while (exists && attempts < 10) {
+                count++;
+                employeeId = `EMP-${year}-${String(count + 1).padStart(5, '0')}`;
+                exists = await Employee.findOne({ employeeId });
+                attempts++;
+              }
+              
+              employee = new Employee({
+                employeeId: employeeId,
+                userId: freshUser._id,
+                personalInfo: {
+                  fullName: hrProfile.personalInfo?.fullName || freshUser.email.split('@')[0],
+                  email: hrProfile.personalInfo?.email || normalizedEmail,
+                  mobile: hrProfile.personalInfo?.mobile,
+                  dateOfBirth: hrProfile.personalInfo?.dateOfBirth,
+                  gender: hrProfile.personalInfo?.gender,
+                  bloodGroup: hrProfile.personalInfo?.bloodGroup,
+                  maritalStatus: hrProfile.personalInfo?.maritalStatus,
+                  address: hrProfile.personalInfo?.address
+                },
+                companyDetails: {
+                  joiningDate: hrProfile.companyDetails?.joiningDate || new Date(),
+                  department: hrProfile.companyDetails?.department || 'Human Resources',
+                  designation: hrProfile.companyDetails?.designation || 'HR',
+                  workType: hrProfile.companyDetails?.workType || 'WFO',
+                  location: hrProfile.companyDetails?.location,
+                  employmentStatus: hrProfile.companyDetails?.employmentStatus || 'Active'
+                },
+                bankDetails: hrProfile.bankDetails || {}
+              });
+              
+              await employee.save();
+              console.log(`[ATTENDANCE/PUNCH] Created Employee profile from HR profile: ${employee._id}`);
+            }
+            
+            // Link employee to user
+            if (!freshUser.employeeId || freshUser.employeeId.toString() !== employee._id.toString()) {
+              await User.findByIdAndUpdate(freshUser._id, { employeeId: employee._id });
+              console.log(`[ATTENDANCE/PUNCH] Linked Employee profile ${employee._id} to HR user ${freshUser._id}`);
+            }
+            
+            // Refresh user to get updated employeeId
+            freshUser = await User.findById(req.user._id);
+            req.user = freshUser;
+          } else {
+            // No HR profile, use standard creation
+            await createOrGetEmployeeProfile(freshUser);
+            freshUser = await User.findById(req.user._id);
+            req.user = freshUser;
+          }
+        } else {
+          // For employees and managers, use standard creation
+          await createOrGetEmployeeProfile(freshUser);
+          
+          // Refresh user object again to get updated employeeId
+          freshUser = await User.findById(req.user._id);
+          if (!freshUser) {
+            return res.status(401).json({ 
+              message: 'User session expired. Please login again.',
+              error: 'USER_NOT_FOUND'
+            });
+          }
+          
+          // Update req.user with fresh data
+          req.user = freshUser;
         }
-        
-        // Update req.user with fresh data
-        req.user = freshUser;
         
         console.log(`[ATTENDANCE/PUNCH] Employee profile ready: ${req.user.employeeId}`);
         

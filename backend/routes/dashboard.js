@@ -184,7 +184,8 @@ router.get('/stats', protect, async (req, res) => {
           departmentDistribution: {},
           teamMemberStatus: [],
           recentLeaves: [],
-          recentGrievances: []
+          recentGrievances: [],
+          recentOffers: []
         });
       }
       
@@ -201,7 +202,30 @@ router.get('/stats', protect, async (req, res) => {
         ],
         'companyDetails.employmentStatus': 'Active',
         _id: { $ne: managerId } // Exclude manager from their own team
-      }).select('_id employeeId personalInfo.fullName personalInfo.email companyDetails.designation companyDetails.department');
+      }).select('_id employeeId personalInfo.fullName personalInfo.email companyDetails.designation companyDetails.department userId');
+      
+      // Mark HR users in team members
+      try {
+        const HR = require('../models/HR');
+        const teamUserIds = teamMembers
+          .filter(emp => emp.userId)
+          .map(emp => emp.userId);
+        
+        if (teamUserIds.length > 0) {
+          const hrProfiles = await HR.find({ userId: { $in: teamUserIds } })
+            .select('userId')
+            .lean();
+          
+          const hrUserIds = new Set(hrProfiles.map(hr => hr.userId?.toString()));
+          
+          teamMembers = teamMembers.map(emp => {
+            const isHR = emp.userId && hrUserIds.has(emp.userId.toString());
+            return { ...emp.toObject(), isHR: !!isHR };
+          });
+        }
+      } catch (hrError) {
+        console.error('[DASHBOARD] Error fetching HR profiles:', hrError);
+      }
       
       console.log(`[DASHBOARD] Manager ${manager.employeeId || manager._id} has ${teamMembers.length} team members`);
       
@@ -323,6 +347,7 @@ router.get('/stats', protect, async (req, res) => {
             email: member.personalInfo?.email || '',
             designation: member.companyDetails?.designation || '',
             department: member.companyDetails?.department || '',
+            isHR: member.isHR || false,
             status: todayAttendance?.status || 'Not Marked',
             punchIn: todayAttendance?.punches?.[0]?.time || null,
             punchOut: todayAttendance?.punches?.find(p => p.type === 'out')?.time || null
@@ -333,6 +358,7 @@ router.get('/stats', protect, async (req, res) => {
       // Recent activities
       let recentLeaves = [];
       let recentGrievances = [];
+      let recentOffers = [];
       
       if (teamIds.length > 0) {
         recentLeaves = await Leave.find({
@@ -354,7 +380,81 @@ router.get('/stats', protect, async (req, res) => {
           .lean();
       }
       
-      console.log(`[DASHBOARD] Recent leaves: ${recentLeaves.length}, Recent grievances: ${recentGrievances.length}`);
+      // Fetch offer letters where the reporting manager matches this manager
+      // This works even if manager has no team members yet
+      const managerEmployeeId = manager._id;
+      
+      try {
+        // Convert manager ID to ObjectId for consistent querying
+        let managerObjectId;
+        if (managerEmployeeId instanceof mongoose.Types.ObjectId) {
+          managerObjectId = managerEmployeeId;
+        } else if (mongoose.Types.ObjectId.isValid(managerEmployeeId)) {
+          managerObjectId = new mongoose.Types.ObjectId(managerEmployeeId);
+        } else {
+          managerObjectId = managerEmployeeId;
+        }
+        
+        // Query using $or to handle both ObjectId and string formats
+        recentOffers = await Application.find({
+          $and: [
+            { 'offerLetter': { $exists: true, $ne: null } },
+            {
+              $or: [
+                { 'offerLetter.reportingManager': managerObjectId },
+                { 'offerLetter.reportingManager': managerEmployeeId.toString() },
+                { 'offerLetter.reportingManager': String(managerEmployeeId) }
+              ]
+            }
+          ]
+        })
+          .populate('jobId', 'title department')
+          .sort({ 'offerLetter.generatedDate': -1, 'createdAt': -1 })
+          .limit(5)
+          .select('candidateInfo.fullName candidateInfo.email jobId offerLetter.status offerLetter.generatedDate offerLetter.joiningDate offerLetter.reportingManager')
+          .lean();
+        
+        console.log(`[DASHBOARD] Manager Employee ID: ${managerEmployeeId} (${typeof managerEmployeeId})`);
+        console.log(`[DASHBOARD] Manager ObjectId: ${managerObjectId}`);
+        console.log(`[DASHBOARD] Recent offers found: ${recentOffers.length}`);
+        
+        if (recentOffers.length === 0) {
+          // Debug: Check all offers to see what reportingManager values exist
+          const allOffersCount = await Application.countDocuments({ 
+            'offerLetter': { $exists: true, $ne: null } 
+          });
+          console.log(`[DASHBOARD] Total offers with offerLetter: ${allOffersCount}`);
+          
+          // Get a few sample offers to see their reportingManager values
+          const sampleOffers = await Application.find({
+            'offerLetter': { $exists: true, $ne: null }
+          })
+            .select('candidateInfo.fullName offerLetter.reportingManager')
+            .limit(5)
+            .lean();
+          
+          console.log(`[DASHBOARD] Sample offers reportingManager values:`, 
+            sampleOffers.map(o => ({
+              candidate: o.candidateInfo?.fullName,
+              reportingManager: o.offerLetter?.reportingManager,
+              reportingManagerType: typeof o.offerLetter?.reportingManager,
+              reportingManagerString: o.offerLetter?.reportingManager?.toString(),
+              matches: o.offerLetter?.reportingManager?.toString() === managerEmployeeId.toString() || 
+                       o.offerLetter?.reportingManager?.toString() === managerObjectId.toString()
+            }))
+          );
+        } else {
+          console.log(`[DASHBOARD] Found offers:`, recentOffers.map(o => ({
+            candidate: o.candidateInfo?.fullName,
+            job: o.jobId?.title,
+            status: o.offerLetter?.status,
+            reportingManager: o.offerLetter?.reportingManager
+          })));
+        }
+      } catch (error) {
+        console.error(`[DASHBOARD] Error fetching recent offers:`, error);
+        recentOffers = [];
+      }
       
       // Attendance percentage
       const attendancePercentage = teamIds.length > 0 
@@ -378,6 +478,7 @@ router.get('/stats', protect, async (req, res) => {
       stats.teamMemberStatus = teamMemberStatus;
       stats.recentLeaves = recentLeaves;
       stats.recentGrievances = recentGrievances;
+      stats.recentOffers = recentOffers;
       
     } else if (req.user.role === 'hr') {
       // HR dashboard - Comprehensive data (all employees, separate from manager data)
@@ -543,6 +644,16 @@ router.get('/stats', protect, async (req, res) => {
         .select('employeeId title status createdAt')
         .lean();
       
+      // Recent offer letters (all offers for HR)
+      const recentOffers = await Application.find({
+        offerLetter: { $exists: true, $ne: null }
+      })
+        .populate('jobId', 'title department')
+        .sort({ 'offerLetter.createdAt': -1 })
+        .limit(5)
+        .select('candidateInfo.fullName candidateInfo.email jobId offerLetter.status offerLetter.createdAt offerLetter.joiningDate')
+        .lean();
+      
       // Monthly attendance summary
       const currentMonth = new Date().getMonth();
       const currentYear = new Date().getFullYear();
@@ -580,6 +691,7 @@ router.get('/stats', protect, async (req, res) => {
       stats.employeeStatus = employeeStatus;
       stats.recentLeaves = recentLeaves;
       stats.recentGrievances = recentGrievances;
+      stats.recentOffers = recentOffers;
       stats.monthlyPresent = monthlyPresent;
       stats.monthlyAbsent = monthlyAbsent;
       

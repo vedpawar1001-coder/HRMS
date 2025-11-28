@@ -98,11 +98,16 @@ const hrSchema = new mongoose.Schema({
   },
   profileStatus: {
     type: String,
-    enum: ['Draft', 'Submitted', 'Under Review', 'Approved', 'Rejected'],
+    enum: ['Draft', 'Submitted', 'Manager Approved', 'Manager Rejected', 'Under Review', 'Approved', 'Rejected'],
     default: 'Draft'
   },
   profileSubmittedAt: {
     type: Date
+  },
+  managerApproval: {
+    approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    approvedAt: Date,
+    comments: String
   },
   activityLog: [{
     action: String,

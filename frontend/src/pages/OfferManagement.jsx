@@ -76,10 +76,12 @@ const OfferManagement = () => {
   })
 
   useEffect(() => {
-    if (user?.role === 'hr' || user?.role === 'admin') {
-      fetchTemplates()
+    if (user?.role === 'hr' || user?.role === 'admin' || user?.role === 'manager') {
+      if (user?.role === 'hr' || user?.role === 'admin') {
+        fetchTemplates()
+        fetchManagers()
+      }
       fetchApplications()
-      fetchManagers()
     }
   }, [user])
 
@@ -96,10 +98,25 @@ const OfferManagement = () => {
     try {
       const { data } = await axios.get('/api/recruitment/applications')
       setAllApplications(data)
-      // Filter to show selected candidates and those with offers
-      const filtered = data.filter(app => 
-        app.status === 'Selected' || app.status === 'Offer' || app.offerLetter
-      )
+      
+      // For managers, only show offers where they are the reporting manager
+      // For HR/Admin, show selected candidates and those with offers
+      let filtered;
+      if (user?.role === 'manager') {
+        // Managers only see applications with offer letters where they are the reporting manager
+        filtered = data.filter(app => 
+          app.offerLetter && 
+          app.offerLetter.reportingManager &&
+          (app.offerLetter.reportingManager._id?.toString() === user?.employeeId?.toString() ||
+           app.offerLetter.reportingManager.toString() === user?.employeeId?.toString())
+        )
+      } else {
+        // HR/Admin see selected candidates and those with offers
+        filtered = data.filter(app => 
+          app.status === 'Selected' || app.status === 'Offer' || app.offerLetter
+        )
+      }
+      
       setApplications(filtered)
       calculateStats(filtered)
     } catch (error) {
@@ -150,6 +167,16 @@ const OfferManagement = () => {
   const applyFilters = (filterValues) => {
     let filtered = [...allApplications]
     
+    // For managers, only show offers where they are the reporting manager
+    if (user?.role === 'manager') {
+      filtered = filtered.filter(app => 
+        app.offerLetter && 
+        app.offerLetter.reportingManager &&
+        (app.offerLetter.reportingManager._id?.toString() === user?.employeeId?.toString() ||
+         app.offerLetter.reportingManager.toString() === user?.employeeId?.toString())
+      )
+    }
+    
     // Filter by status
     if (filterValues.status) {
       filtered = filtered.filter(app => {
@@ -163,9 +190,13 @@ const OfferManagement = () => {
         return false
       })
     } else {
-      filtered = filtered.filter(app => 
-        app.status === 'Selected' || app.status === 'Offer' || app.offerLetter
-      )
+      // For managers, we already filtered above, so just ensure they have offers
+      // For HR/Admin, show selected candidates and those with offers
+      if (user?.role !== 'manager') {
+        filtered = filtered.filter(app => 
+          app.status === 'Selected' || app.status === 'Offer' || app.offerLetter
+        )
+      }
     }
 
     // Filter by search
@@ -424,7 +455,11 @@ const OfferManagement = () => {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Offer Letter Management</h1>
-          <p className="mt-2 text-gray-600">Generate, track, and manage offer letters efficiently</p>
+          <p className="mt-2 text-gray-600">
+            {user?.role === 'manager' 
+              ? 'View and manage offer letters assigned to you' 
+              : 'Generate, track, and manage offer letters efficiently'}
+          </p>
         </div>
         <div className="flex space-x-3">
           {applicationsWithOffers.length > 0 && (
@@ -437,21 +472,35 @@ const OfferManagement = () => {
               Export
             </button>
           )}
-          <button
-            onClick={handleBulkSendReminders}
-            className="px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 flex items-center"
-            title="Send reminders to all pending offers"
-          >
-            <FiMail className="mr-2" size={20} />
-            Send Reminders
-          </button>
-          <button
-            onClick={() => setShowTemplateForm(true)}
-            className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 flex items-center"
-          >
-            <FiUpload className="mr-2" size={20} />
-            Upload Template
-          </button>
+          {user?.role === 'manager' && (
+            <button
+              onClick={handleBulkSendReminders}
+              className="px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 flex items-center"
+              title="Send reminders to all pending offers"
+            >
+              <FiMail className="mr-2" size={20} />
+              Send Reminders
+            </button>
+          )}
+          {(user?.role === 'hr' || user?.role === 'admin') && (
+            <>
+              <button
+                onClick={handleBulkSendReminders}
+                className="px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 flex items-center"
+                title="Send reminders to all pending offers"
+              >
+                <FiMail className="mr-2" size={20} />
+                Send Reminders
+              </button>
+              <button
+                onClick={() => setShowTemplateForm(true)}
+                className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 flex items-center"
+              >
+                <FiUpload className="mr-2" size={20} />
+                Upload Template
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -586,7 +635,8 @@ const OfferManagement = () => {
         </div>
       </div>
 
-      {/* Templates Section */}
+      {/* Templates Section - Only for HR/Admin */}
+      {(user?.role === 'hr' || user?.role === 'admin') && (
       <div>
         <h2 className="text-xl font-semibold text-gray-900 mb-4">Offer Templates</h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -636,6 +686,7 @@ const OfferManagement = () => {
           )}
         </div>
       </div>
+      )}
 
       {/* Applications Ready for Offer */}
       <div>
@@ -736,16 +787,22 @@ const OfferManagement = () => {
                         <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                           <div className="flex items-center space-x-2">
                             {!app.offerLetter ? (
-                              <button
-                                onClick={() => openOfferForm(app)}
-                                className="text-primary-600 hover:text-primary-700 flex items-center"
-                              >
-                                <FiPlus className="mr-1" size={16} />
-                                Generate
-                              </button>
+                              // Only HR/Admin can generate offers
+                              (user?.role === 'hr' || user?.role === 'admin') ? (
+                                <button
+                                  onClick={() => openOfferForm(app)}
+                                  className="text-primary-600 hover:text-primary-700 flex items-center"
+                                >
+                                  <FiPlus className="mr-1" size={16} />
+                                  Generate
+                                </button>
+                              ) : (
+                                <span className="text-gray-400 text-xs">No offer generated</span>
+                              )
                             ) : (
                               <>
-                                {app.offerLetter.status === 'Pending' && (
+                                {/* Send/Remind - Available to all */}
+                                {app.offerLetter.status === 'Pending' && (user?.role === 'hr' || user?.role === 'admin') && (
                                   <button
                                     onClick={() => handleSendOffer(app._id)}
                                     className="text-green-600 hover:text-green-700 flex items-center"
@@ -765,6 +822,7 @@ const OfferManagement = () => {
                                     Remind
                                   </button>
                                 )}
+                                {/* View - Available to all */}
                                 {app.offerLetter.documentUrl && (
                                   <button
                                     onClick={() => {
@@ -788,41 +846,46 @@ const OfferManagement = () => {
                                     View
                                   </button>
                                 )}
-                                <button
-                                  onClick={() => handleDuplicateOffer(app)}
-                                  className="text-purple-600 hover:text-purple-700 flex items-center"
-                                  title="Duplicate offer"
-                                >
-                                  <FiCopy className="mr-1" size={16} />
-                                  Duplicate
-                                </button>
-                                {app.offerLetter.status === 'Pending' && (
-                                  <button
-                                    onClick={() => {
-                                      setSelectedApplication(app)
-                                      setOfferForm({
-                                        templateId: app.offerLetter.templateId || '',
-                                        candidateName: app.offerLetter.candidateName,
-                                        jobTitle: app.offerLetter.jobTitle,
-                                        salary: app.offerLetter.salary,
-                                        joiningDate: app.offerLetter.joiningDate ? format(new Date(app.offerLetter.joiningDate), 'yyyy-MM-dd') : '',
-                                        reportingManager: app.offerLetter.reportingManager || '',
-                                        department: app.offerLetter.department,
-                                        workType: app.offerLetter.workType || 'WFO',
-                                        workLocation: app.offerLetter.workLocation || '',
-                                        probationPeriod: app.offerLetter.probationPeriod || '3 months',
-                                        noticePeriod: app.offerLetter.noticePeriod || '30 days',
-                                        additionalTerms: app.offerLetter.additionalTerms || '',
-                                        expiryDate: app.offerLetter.expiryDate ? format(new Date(app.offerLetter.expiryDate), 'yyyy-MM-dd') : ''
-                                      })
-                                      setShowOfferForm(true)
-                                    }}
-                                    className="text-gray-600 hover:text-gray-700 flex items-center"
-                                    title="Edit offer"
-                                  >
-                                    <FiEdit className="mr-1" size={16} />
-                                    Edit
-                                  </button>
+                                {/* Duplicate and Edit - Only for HR/Admin */}
+                                {(user?.role === 'hr' || user?.role === 'admin') && (
+                                  <>
+                                    <button
+                                      onClick={() => handleDuplicateOffer(app)}
+                                      className="text-purple-600 hover:text-purple-700 flex items-center"
+                                      title="Duplicate offer"
+                                    >
+                                      <FiCopy className="mr-1" size={16} />
+                                      Duplicate
+                                    </button>
+                                    {app.offerLetter.status === 'Pending' && (
+                                      <button
+                                        onClick={() => {
+                                          setSelectedApplication(app)
+                                          setOfferForm({
+                                            templateId: app.offerLetter.templateId || '',
+                                            candidateName: app.offerLetter.candidateName,
+                                            jobTitle: app.offerLetter.jobTitle,
+                                            salary: app.offerLetter.salary,
+                                            joiningDate: app.offerLetter.joiningDate ? format(new Date(app.offerLetter.joiningDate), 'yyyy-MM-dd') : '',
+                                            reportingManager: app.offerLetter.reportingManager || '',
+                                            department: app.offerLetter.department,
+                                            workType: app.offerLetter.workType || 'WFO',
+                                            workLocation: app.offerLetter.workLocation || '',
+                                            probationPeriod: app.offerLetter.probationPeriod || '3 months',
+                                            noticePeriod: app.offerLetter.noticePeriod || '30 days',
+                                            additionalTerms: app.offerLetter.additionalTerms || '',
+                                            expiryDate: app.offerLetter.expiryDate ? format(new Date(app.offerLetter.expiryDate), 'yyyy-MM-dd') : ''
+                                          })
+                                          setShowOfferForm(true)
+                                        }}
+                                        className="text-gray-600 hover:text-gray-700 flex items-center"
+                                        title="Edit offer"
+                                      >
+                                        <FiEdit className="mr-1" size={16} />
+                                        Edit
+                                      </button>
+                                    )}
+                                  </>
                                 )}
                               </>
                             )}

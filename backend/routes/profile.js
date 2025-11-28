@@ -1158,8 +1158,8 @@ router.post('/submit', protect, async (req, res) => {
       });
     }
     
-    // Check if already submitted
-    if (employee.profileStatus === 'Submitted' || employee.profileStatus === 'Under Review' || employee.profileStatus === 'Approved') {
+    // Check if already submitted (allow resubmission if rejected)
+    if (employee.profileStatus === 'Submitted' || employee.profileStatus === 'Under Review' || employee.profileStatus === 'Approved' || employee.profileStatus === 'Manager Approved') {
       return res.status(400).json({ 
         message: `Profile has already been submitted. Current status: ${employee.profileStatus}`,
         status: employee.profileStatus,
@@ -1414,11 +1414,30 @@ router.get('/:id', protect, async (req, res) => {
       }
     }
     
+    // Fetch performance reviews for this employee
+    let performanceReviews = [];
+    try {
+      const Performance = require('../models/Performance');
+      performanceReviews = await Performance.find({ employeeId: employee._id })
+        .populate('managerReview.reviewedBy', 'email')
+        .populate('hrReview.reviewedBy', 'email')
+        .select('reviewCycle period startDate endDate managerReview hrReview status rating createdAt')
+        .sort({ createdAt: -1 })
+        .limit(10) // Get latest 10 reviews
+        .lean();
+      
+      console.log(`[PROFILE] Found ${performanceReviews.length} performance reviews for employee ${employee._id}`);
+    } catch (error) {
+      console.error('[PROFILE] Error fetching performance reviews:', error);
+      // Continue without performance reviews if there's an error
+    }
+    
     res.json({
       ...maskedData,
       profileCompletion: employee.profileCompletion,
       isViewOnly: !isOwnProfile, // Flag to indicate if this is view-only mode
-      reportingManagerInfo: reportingManagerInfo
+      reportingManagerInfo: reportingManagerInfo,
+      performanceReviews: performanceReviews
     });
   } catch (error) {
     console.error('Get profile by ID error:', error);

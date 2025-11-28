@@ -514,7 +514,7 @@ const RecruitmentATS = () => {
           <h1 className="text-3xl font-bold text-gray-900">Application Tracking System</h1>
           <p className="mt-2 text-gray-600">Manage candidates and recruitment pipeline</p>
         </div>
-        {(user?.role === 'hr' || user?.role === 'admin') && (
+ {(user?.role === 'hr' || user?.role === 'admin' || user?.role === 'manager') && (
           <button
             onClick={() => setShowUploadModal(true)}
             className="mt-4 md:mt-0 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 flex items-center"

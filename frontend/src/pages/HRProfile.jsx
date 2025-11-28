@@ -27,7 +27,8 @@ import {
   FiUsers,
   FiArrowLeft,
   FiCheck,
-  FiXCircle
+  FiXCircle,
+  FiStar
 } from 'react-icons/fi'
 import toast from 'react-hot-toast'
 
@@ -51,6 +52,14 @@ const HRProfile = () => {
   const [isViewOnly, setIsViewOnly] = useState(false) // Flag for view-only mode (viewing employee profiles)
 
   useEffect(() => {
+    // Wait for user to be loaded before making any decisions
+    if (!user) {
+      console.log('[HR_PROFILE] Waiting for user to load...')
+      return
+    }
+    
+    console.log('[HR_PROFILE] useEffect triggered:', { employeeId, userRole: user?.role })
+    
     // Fetch employees list if HR (needed for dropdown)
     if (user?.role === 'hr') {
       fetchEmployees()
@@ -58,17 +67,43 @@ const HRProfile = () => {
     
     // Fetch profile based on employeeId parameter
     if (employeeId) {
-      // Viewing specific employee profile (view-only for HR)
-      fetchEmployeeProfile(employeeId)
-      setIsViewOnly(true)
-      setEditing(false) // Always disable editing when viewing employee profiles
+      // Check if this is an HR profile ID (for managers) or employee ID (for HR)
+      if (user?.role === 'manager') {
+        // Manager viewing HR profile by HR profile ID
+        console.log('[HR_PROFILE] Manager detected, fetching HR profile:', employeeId)
+        fetchHRProfileById(employeeId)
+        setIsViewOnly(true)
+        setEditing(false)
+      } else if (user?.role === 'hr') {
+        // HR viewing employee profile
+        console.log('[HR_PROFILE] HR viewing employee profile:', employeeId)
+        fetchEmployeeProfile(employeeId)
+        setIsViewOnly(true)
+        setEditing(false)
+      } else {
+        console.log('[HR_PROFILE] Unauthorized role for viewing profile:', user?.role)
+        setLoading(false)
+      }
     } else {
-      // Viewing own HR profile
-      fetchProfile(true, true) // Force recalculation on load
-      setIsViewOnly(false)
+      // Viewing own HR profile (only for HR/Admin users)
+      if (user?.role === 'hr' || user?.role === 'admin') {
+        fetchProfile(true, true) // Force recalculation on load
+        setIsViewOnly(false)
+      } else {
+        setLoading(false)
+      }
     }
-    fetchTimeline()
-    fetchMissingFields()
+    
+    // Only fetch timeline if we have a valid context
+    if (employeeId && user?.role === 'hr') {
+      fetchTimeline()
+    } else if (!employeeId && (user?.role === 'hr' || user?.role === 'admin')) {
+      fetchTimeline()
+    }
+    
+    if (user?.role === 'hr' || user?.role === 'admin') {
+      fetchMissingFields()
+    }
   }, [employeeId, user])
 
   const fetchMissingFields = async () => {
@@ -182,6 +217,36 @@ const HRProfile = () => {
     }
   }
 
+  // Fetch HR profile by ID (for managers viewing HR profiles)
+  const fetchHRProfileById = async (hrProfileId) => {
+    setLoading(true)
+    try {
+      console.log('[HR_PROFILE] Manager fetching HR profile by ID:', hrProfileId)
+      const { data } = await axios.get(`/api/hr-profile/${hrProfileId}`)
+      console.log('[HR_PROFILE] HR profile fetched successfully:', data?._id)
+      setProfile(data)
+      // Ensure all nested structures are initialized
+      setFormData({
+        ...data,
+        idProofs: data.idProofs || {},
+        bankDetails: data.bankDetails || {},
+        companyDetails: data.companyDetails || {},
+        employmentInfo: {
+          ...data.employmentInfo,
+          previousCompanies: data.employmentInfo?.previousCompanies || []
+        }
+      })
+      setIsViewOnly(true)
+      setEditing(false) // Always disable editing when managers view HR profiles
+      setLoading(false)
+    } catch (error) {
+      console.error('[HR_PROFILE] Error fetching HR profile by ID:', error)
+      console.error('[HR_PROFILE] Error response:', error.response?.data)
+      toast.error(error.response?.data?.message || 'Failed to load HR profile')
+      setLoading(false)
+    }
+  }
+
   // Fetch employee profile by ID (for HR viewing employees)
   const fetchEmployeeProfile = async (empId) => {
     setLoading(true)
@@ -213,14 +278,31 @@ const HRProfile = () => {
     try {
       let timelineEndpoint
       if (employeeId) {
-        // Viewing employee profile - use employee timeline
-        timelineEndpoint = `/api/profile/timeline?employeeId=${employeeId}`
+        if (user?.role === 'manager') {
+          // Manager viewing HR profile by ID - skip timeline or use HR timeline if available
+          // For now, skip timeline for managers viewing HR profiles
+          setTimeline([])
+          return
+        } else if (user?.role === 'hr') {
+          // HR viewing employee profile - use employee timeline
+          timelineEndpoint = `/api/profile/timeline?employeeId=${employeeId}`
+        } else {
+          setTimeline([])
+          return
+        }
       } else {
-        // Viewing own HR profile - use HR timeline
-        timelineEndpoint = '/api/hr-profile/timeline'
+        // Viewing own HR profile - use HR timeline (only for HR/Admin)
+        if (user?.role === 'hr' || user?.role === 'admin') {
+          timelineEndpoint = '/api/hr-profile/timeline'
+        } else {
+          setTimeline([])
+          return
+        }
       }
-      const { data } = await axios.get(timelineEndpoint)
-      setTimeline(data || [])
+      if (timelineEndpoint) {
+        const { data } = await axios.get(timelineEndpoint)
+        setTimeline(data || [])
+      }
     } catch (error) {
       console.error('Error fetching timeline:', error)
       setTimeline([])
@@ -233,7 +315,7 @@ const HRProfile = () => {
       return
     }
     
-    if (profile.profileStatus === 'Submitted' || profile.profileStatus === 'Under Review' || profile.profileStatus === 'Approved') {
+    if (profile.profileStatus === 'Submitted' || profile.profileStatus === 'Manager Approved' || profile.profileStatus === 'Approved') {
       toast.error(`Profile has already been submitted. Status: ${profile.profileStatus}`)
       return
     }
@@ -241,7 +323,7 @@ const HRProfile = () => {
     setSubmitting(true)
     try {
       const { data } = await axios.post('/api/hr-profile/submit')
-      toast.success(data.message || 'Profile submitted successfully for HR review!')
+      toast.success(data.message || 'Profile submitted successfully for manager review!')
       
       // Refresh profile to get updated status
       setTimeout(() => {
@@ -418,14 +500,22 @@ const HRProfile = () => {
       return
     }
     
+    // Only HR can verify documents
+    if (user?.role !== 'hr') {
+      toast.error('Only HR can verify documents.')
+      return
+    }
+    
     const url = `/api/profile/${employeeId}/documents/${documentIndex}/verify`
     console.log('[HR_PROFILE] Verifying document:', { employeeId, documentIndex, url })
     
     try {
       const { data } = await axios.put(url)
       toast.success('Document verified successfully!')
-      // Refresh the profile to get updated document status
-      await fetchEmployeeProfile(employeeId)
+      // Refresh the profile to get updated document status (only for HR viewing employee profiles)
+      if (user?.role === 'hr') {
+        await fetchEmployeeProfile(employeeId)
+      }
     } catch (error) {
       console.error('[HR_PROFILE] Error verifying document:', {
         error,
@@ -444,6 +534,12 @@ const HRProfile = () => {
       return
     }
     
+    // Only HR can reject documents
+    if (user?.role !== 'hr') {
+      toast.error('Only HR can reject documents.')
+      return
+    }
+    
     if (!rejectionReason || rejectionReason.trim() === '') {
       toast.error('Please provide a reason for rejection')
       return
@@ -457,8 +553,10 @@ const HRProfile = () => {
         rejectionReason: rejectionReason.trim()
       })
       toast.success('Document rejected successfully!')
-      // Refresh the profile to get updated document status
-      await fetchEmployeeProfile(employeeId)
+      // Refresh the profile to get updated document status (only for HR viewing employee profiles)
+      if (user?.role === 'hr') {
+        await fetchEmployeeProfile(employeeId)
+      }
     } catch (error) {
       console.error('[HR_PROFILE] Error rejecting document:', {
         error,
@@ -660,10 +758,19 @@ const HRProfile = () => {
 
   const formatDate = (date) => {
     if (!date) return '-'
-    return new Date(date).toLocaleDateString('en-US', {
+    return new Date(date).toLocaleDateString('en-GB', {
       year: 'numeric',
-      month: 'short',
-      day: 'numeric'
+      month: '2-digit',
+      day: '2-digit'
+    })
+  }
+  
+  const formatDateShort = (date) => {
+    if (!date) return '-'
+    return new Date(date).toLocaleDateString('en-GB', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric'
     })
   }
 
@@ -674,6 +781,7 @@ const HRProfile = () => {
     { id: 'employment', name: 'Employment', icon: FiTrendingUp },
     { id: 'bank', name: 'Bank Details', icon: FiDollarSign },
     { id: 'documents', name: 'Documents', icon: FiFileText },
+    { id: 'performance', name: 'Performance Reviews', icon: FiStar },
     { id: 'timeline', name: 'Timeline', icon: FiActivity }
   ]
 
@@ -754,6 +862,31 @@ const HRProfile = () => {
 
   return (
     <div className="space-y-6">
+      {/* Manager Viewing HR Profile Indicator */}
+      {user?.role === 'manager' && employeeId && (
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="card bg-blue-50 border border-blue-200"
+        >
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-3">
+              <FiUser className="text-blue-600" size={24} />
+              <div>
+                <h3 className="font-semibold text-gray-900">Viewing HR Profile</h3>
+                <p className="text-sm text-gray-600">You are viewing this HR profile in read-only mode</p>
+              </div>
+            </div>
+            <button
+              onClick={() => navigate('/employees')}
+              className="btn-secondary flex items-center gap-2"
+            >
+              <FiArrowLeft /> Back to Employees
+            </button>
+          </div>
+        </motion.div>
+      )}
+
       {/* Employee Selector for HR - Always show for HR */}
       {user?.role === 'hr' && (
         <motion.div
@@ -848,7 +981,7 @@ const HRProfile = () => {
               <div className="mt-2">
                 <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${
                   profile.profileStatus === 'Approved' ? 'bg-green-100 text-green-800' :
-                  profile.profileStatus === 'Submitted' || profile.profileStatus === 'Under Review' ? 'bg-blue-100 text-blue-800' :
+                  profile.profileStatus === 'Submitted' || profile.profileStatus === 'Manager Approved' ? 'bg-blue-100 text-blue-800' :
                   profile.profileStatus === 'Rejected' ? 'bg-red-100 text-red-800' :
                   'bg-gray-100 text-gray-800'
                 }`}>
@@ -856,7 +989,7 @@ const HRProfile = () => {
                 </span>
                 {profile.profileSubmittedAt && (
                   <p className="text-xs text-gray-500 mt-1">
-                    Submitted: {new Date(profile.profileSubmittedAt).toLocaleDateString()}
+                    Submitted: {formatDateShort(profile.profileSubmittedAt)}
                   </p>
                 )}
               </div>
@@ -920,6 +1053,108 @@ const HRProfile = () => {
               }`}
             />
           </div>
+          
+          {/* Profile Status Display - Below Progress Bar */}
+          <div className="mt-4">
+            {profile.profileStatus === 'Approved' && (
+              <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                <div className="flex items-center space-x-2">
+                  <FiCheckCircle className="text-green-600" size={20} />
+                  <div className="flex-1">
+                    <p className="text-sm font-semibold text-green-800">Profile Approved</p>
+                    <p className="text-xs text-green-700 mt-1">
+                      Your profile has been approved and is now active.
+                    </p>
+                    {profile.managerApproval?.approvedAt && (
+                      <p className="text-xs text-green-600 mt-1">
+                        Manager Approved: {new Date(profile.managerApproval.approvedAt).toLocaleDateString()}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+            {(profile.profileStatus === 'Submitted' || profile.profileStatus === 'Manager Approved') && (
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <div className="flex items-center space-x-2">
+                  <FiClock className="text-blue-600" size={20} />
+                  <div className="flex-1">
+                    <p className="text-sm font-semibold text-blue-800">
+                      {profile.profileStatus === 'Manager Approved' 
+                        ? 'Manager Approved'
+                        : 'Profile Submitted'}
+                    </p>
+                    <p className="text-xs text-blue-700 mt-1">
+                      {profile.profileStatus === 'Manager Approved'
+                        ? 'Your manager has approved your profile.'
+                        : 'Your profile has been submitted and is awaiting manager approval.'}
+                    </p>
+                    {profile.profileStatus === 'Manager Approved' && profile.managerApproval?.approvedAt && (
+                      <p className="text-xs text-blue-600 mt-1">
+                        Manager Approved: {formatDateShort(profile.managerApproval.approvedAt)}
+                        {profile.managerApproval.comments && (
+                          <span className="ml-2">- {profile.managerApproval.comments}</span>
+                        )}
+                      </p>
+                    )}
+                    {profile.profileSubmittedAt && (
+                      <p className="text-xs text-blue-600 mt-1">
+                        Submitted: {formatDateShort(profile.profileSubmittedAt)}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+            {profile.profileStatus === 'Manager Rejected' && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                <div className="flex items-center space-x-2">
+                  <FiXCircle className="text-red-600" size={20} />
+                  <div className="flex-1">
+                    <p className="text-sm font-semibold text-red-800">Profile Rejected by Manager</p>
+                    <p className="text-xs text-red-700 mt-1">
+                      Your profile has been rejected by your manager. Please review the comments and resubmit.
+                    </p>
+                    {profile.managerApproval?.approvedAt && (
+                      <p className="text-xs text-red-600 mt-1">
+                        Rejected: {formatDateShort(profile.managerApproval.approvedAt)}
+                        {profile.managerApproval.comments && (
+                          <span className="ml-2">- {profile.managerApproval.comments}</span>
+                        )}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+            {profile.profileStatus === 'Rejected' && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                <div className="flex items-center space-x-2">
+                  <FiXCircle className="text-red-600" size={20} />
+                  <div className="flex-1">
+                    <p className="text-sm font-semibold text-red-800">Profile Rejected</p>
+                    <p className="text-xs text-red-700 mt-1">
+                      Your profile has been rejected. Please review and resubmit after making necessary changes.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+            {(!profile.profileStatus || profile.profileStatus === 'Draft') && profile.profileCompletion === 100 && (
+              <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                <div className="flex items-center space-x-2">
+                  <FiClock className="text-gray-600" size={20} />
+                  <div className="flex-1">
+                    <p className="text-sm font-semibold text-gray-800">Profile Ready for Submission</p>
+                    <p className="text-xs text-gray-700 mt-1">
+                      Your profile is 100% complete. Submit it for manager review to get it approved.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+          
           {profile.profileCompletion < 100 && (
             <div className="mt-2">
               <p className="text-xs text-gray-500 mb-2">
@@ -959,7 +1194,7 @@ const HRProfile = () => {
                     Profile Complete!
                   </p>
                   <p className="text-xs text-green-700">
-                    Your profile is 100% complete. Submit it for HR review.
+                    Your profile is 100% complete. Submit it for manager review.
                   </p>
                 </div>
                 <button
@@ -980,17 +1215,6 @@ const HRProfile = () => {
                   )}
                 </button>
               </div>
-            </div>
-          )}
-          {profile.profileCompletion === 100 && (profile.profileStatus === 'Submitted' || profile.profileStatus === 'Under Review') && (
-            <div className="mt-4 pt-4 border-t border-blue-200 bg-blue-50 rounded-lg p-4">
-              <p className="text-sm font-semibold text-blue-800">
-                <FiCheckCircle className="inline mr-2" />
-                Profile Submitted for Review
-              </p>
-              <p className="text-xs text-blue-700 mt-1">
-                Your profile has been submitted and is currently under HR review. You will be notified once it's approved.
-              </p>
             </div>
           )}
           {profile.profileCompletion === 100 && profile.profileStatus === 'Approved' && (
@@ -1100,6 +1324,13 @@ const HRProfile = () => {
               userRole={user?.role}
               onVerifyDocument={handleVerifyDocument}
               onRejectDocument={handleRejectDocument}
+            />
+          )}
+
+          {activeTab === 'performance' && (
+            <PerformanceReviewsTab 
+              profile={profile}
+              isViewOnly={isViewOnly}
             />
           )}
 
@@ -2590,6 +2821,212 @@ const DocumentsTab = ({ profile, onUpload, uploading, isViewOnly = false, userRo
           <p className="text-gray-500">No documents uploaded</p>
         )}
       </div>
+    </div>
+  )
+}
+
+// Performance Reviews Tab Component
+const PerformanceReviewsTab = ({ profile, isViewOnly }) => {
+  const performanceReviews = profile?.performanceReviews || []
+  
+  const renderStars = (rating) => {
+    const stars = []
+    for (let i = 1; i <= 5; i++) {
+      stars.push(
+        <FiStar
+          key={i}
+          className={i <= rating ? 'text-yellow-400 fill-current' : 'text-gray-300'}
+          size={18}
+        />
+      )
+    }
+    return stars
+  }
+
+  const getStatusColor = (status) => {
+    switch (status) {
+      case 'Completed':
+        return 'bg-green-100 text-green-800'
+      case 'Manager Review':
+        return 'bg-blue-100 text-blue-800'
+      case 'HR Review':
+        return 'bg-purple-100 text-purple-800'
+      case 'Self Assessment':
+        return 'bg-yellow-100 text-yellow-800'
+      default:
+        return 'bg-gray-100 text-gray-800'
+    }
+  }
+
+  const formatDate = (date) => {
+    if (!date) return 'N/A'
+    return new Date(date).toLocaleDateString('en-GB', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric'
+    })
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h3 className="text-xl font-semibold flex items-center gap-2">
+          <FiStar className="text-yellow-500" />
+          Performance Reviews
+        </h3>
+        {performanceReviews.length > 0 && (
+          <span className="text-sm text-gray-500">
+            {performanceReviews.length} review{performanceReviews.length !== 1 ? 's' : ''}
+          </span>
+        )}
+      </div>
+
+      {performanceReviews.length === 0 ? (
+        <div className="text-center py-12 bg-gray-50 rounded-lg border-2 border-dashed border-gray-300">
+          <FiStar className="mx-auto text-gray-400 mb-4" size={48} />
+          <p className="text-gray-500 text-lg">No performance reviews available</p>
+          <p className="text-gray-400 text-sm mt-2">
+            Performance reviews will appear here once submitted by the manager
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {performanceReviews.map((review) => (
+            <motion.div
+              key={review._id}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="bg-white border rounded-lg p-6 shadow-sm hover:shadow-md transition-shadow"
+            >
+              <div className="flex items-start justify-between mb-4">
+                <div>
+                  <h4 className="text-lg font-semibold text-gray-900">
+                    {review.reviewCycle} Review - {review.period}
+                  </h4>
+                  {review.startDate && review.endDate && (
+                    <p className="text-sm text-gray-500 mt-1">
+                      {formatDate(review.startDate)} - {formatDate(review.endDate)}
+                    </p>
+                  )}
+                </div>
+                <span className={`px-3 py-1 rounded-full text-xs font-medium ${getStatusColor(review.status)}`}>
+                  {review.status}
+                </span>
+              </div>
+
+              {review.managerReview && (
+                <div className="mt-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
+                  <div className="flex items-center justify-between mb-3">
+                    <h5 className="font-semibold text-blue-900 flex items-center gap-2">
+                      <FiTrendingUp className="text-blue-600" />
+                      Manager Review
+                    </h5>
+                    {review.managerReview.reviewedAt && (
+                      <span className="text-xs text-blue-600">
+                        Reviewed: {formatDate(review.managerReview.reviewedAt)}
+                      </span>
+                    )}
+                  </div>
+                  
+                  {review.managerReview.overallRating && (
+                    <div className="mb-3">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-sm font-medium text-gray-700">Overall Rating:</span>
+                        <div className="flex items-center gap-1">
+                          {renderStars(review.managerReview.overallRating)}
+                        </div>
+                        <span className="text-sm font-semibold text-gray-900">
+                          {review.managerReview.overallRating}/5
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {review.managerReview.feedback && (
+                    <div className="mb-3">
+                      <p className="text-sm font-medium text-gray-700 mb-1">Feedback:</p>
+                      <p className="text-sm text-gray-600 whitespace-pre-wrap">
+                        {review.managerReview.feedback}
+                      </p>
+                    </div>
+                  )}
+
+                  {review.managerReview.improvementPlan && (
+                    <div>
+                      <p className="text-sm font-medium text-gray-700 mb-1">Improvement Plan:</p>
+                      <p className="text-sm text-gray-600 whitespace-pre-wrap">
+                        {review.managerReview.improvementPlan}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {review.hrReview && (
+                <div className="mt-4 p-4 bg-purple-50 rounded-lg border border-purple-200">
+                  <div className="flex items-center justify-between mb-3">
+                    <h5 className="font-semibold text-purple-900 flex items-center gap-2">
+                      <FiBriefcase className="text-purple-600" />
+                      HR Review
+                    </h5>
+                    {review.hrReview.reviewedAt && (
+                      <span className="text-xs text-purple-600">
+                        Reviewed: {formatDate(review.hrReview.reviewedAt)}
+                      </span>
+                    )}
+                  </div>
+                  
+                  {review.hrReview.adjustedRating && (
+                    <div className="mb-3">
+                      <span className="text-sm font-medium text-gray-700">Adjusted Rating: </span>
+                      <span className="text-sm font-semibold text-gray-900">
+                        {review.hrReview.adjustedRating}/5
+                      </span>
+                    </div>
+                  )}
+
+                  {review.hrReview.comments && (
+                    <div>
+                      <p className="text-sm font-medium text-gray-700 mb-1">Comments:</p>
+                      <p className="text-sm text-gray-600 whitespace-pre-wrap">
+                        {review.hrReview.comments}
+                      </p>
+                    </div>
+                  )}
+
+                  {review.hrReview.approved !== undefined && (
+                    <div className="mt-2">
+                      <span className={`px-2 py-1 rounded text-xs font-medium ${
+                        review.hrReview.approved
+                          ? 'bg-green-100 text-green-800'
+                          : 'bg-red-100 text-red-800'
+                      }`}>
+                        {review.hrReview.approved ? 'Approved' : 'Not Approved'}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {review.rating && review.rating > 0 && !review.managerReview?.overallRating && (
+                <div className="mt-4">
+                  <p className="text-sm font-medium text-gray-700 mb-1">Rating:</p>
+                  <div className="flex items-center gap-2">
+                    {renderStars(review.rating)}
+                    <span className="text-sm font-semibold text-gray-900">{review.rating}/5</span>
+                  </div>
+                </div>
+              )}
+
+              <div className="mt-4 pt-4 border-t border-gray-200">
+                <p className="text-xs text-gray-500">
+                  Created: {formatDate(review.createdAt)}
+                </p>
+              </div>
+            </motion.div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

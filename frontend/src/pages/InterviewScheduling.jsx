@@ -113,8 +113,10 @@ const InterviewScheduling = () => {
   const [loading, setLoading] = useState(true)
   const [showScheduleForm, setShowScheduleForm] = useState(false)
   const [showEditForm, setShowEditForm] = useState(false)
+  const [showCompleteForm, setShowCompleteForm] = useState(false)
   const [selectedApplication, setSelectedApplication] = useState(null)
   const [selectedInterview, setSelectedInterview] = useState(null)
+  const [interviewToComplete, setInterviewToComplete] = useState(null)
   const [scheduleForm, setScheduleForm] = useState({
     roundType: 'Aptitude Test',
     scheduledDate: '',
@@ -123,6 +125,11 @@ const InterviewScheduling = () => {
     mode: 'Online',
     meetingLink: '',
     venue: ''
+  })
+  const [completeForm, setCompleteForm] = useState({
+    status: 'Passed',
+    feedback: '',
+    rating: 5
   })
 
   useEffect(() => {
@@ -239,23 +246,39 @@ const InterviewScheduling = () => {
     }
   }
 
-  const handleCompleteInterview = async (interview, status, feedback, rating) => {
+  const handleCompleteInterview = async (e) => {
+    e.preventDefault()
+    if (!interviewToComplete) return
+    
     try {
       await axios.put(
-        `/api/recruitment/applications/${interview.applicationId}/interviews/${interview._id}`,
+        `/api/recruitment/applications/${interviewToComplete.applicationId}/interviews/${interviewToComplete._id}`,
         {
-          status,
-          feedback,
-          rating
+          status: completeForm.status,
+          feedback: completeForm.feedback || '',
+          rating: completeForm.rating || 5
         }
       )
-      toast.success('Interview completed')
+      toast.success('Interview completed successfully')
+      setShowCompleteForm(false)
+      setInterviewToComplete(null)
+      setCompleteForm({ status: 'Passed', feedback: '', rating: 5 })
       fetchInterviews()
       fetchApplications()
     } catch (error) {
       console.error('Error completing interview:', error)
-      toast.error('Failed to complete interview')
+      toast.error(error.response?.data?.message || 'Failed to complete interview')
     }
+  }
+
+  const openCompleteForm = (interview) => {
+    setInterviewToComplete(interview)
+    setCompleteForm({
+      status: interview.status === 'Scheduled' || interview.status === 'Rescheduled' ? 'Passed' : interview.status,
+      feedback: interview.feedback || '',
+      rating: interview.rating || 5
+    })
+    setShowCompleteForm(true)
   }
 
   const openScheduleForm = (application) => {
@@ -380,14 +403,7 @@ const InterviewScheduling = () => {
                     Edit
                   </button>
                   <button
-                    onClick={() => {
-                      const status = prompt('Enter status (Passed/Failed/No Show):')
-                      const feedback = prompt('Enter feedback:')
-                      const rating = prompt('Enter rating (1-5):')
-                      if (status && feedback && rating) {
-                        handleCompleteInterview(interview, status, feedback, parseInt(rating))
-                      }
-                    }}
+                    onClick={() => openCompleteForm(interview)}
                     className="flex-1 px-3 py-2 text-sm bg-primary-600 text-white rounded-lg hover:bg-primary-700 flex items-center justify-center"
                   >
                     <FiCheckCircle className="mr-1" size={16} />
@@ -483,6 +499,21 @@ const InterviewScheduling = () => {
           onClose={() => {
             setShowEditForm(false)
             setSelectedInterview(null)
+          }}
+        />
+      )}
+
+      {/* Complete Interview Modal */}
+      {showCompleteForm && interviewToComplete && (
+        <InterviewCompleteModal
+          interview={interviewToComplete}
+          formData={completeForm}
+          onFormChange={setCompleteForm}
+          onSubmit={handleCompleteInterview}
+          onClose={() => {
+            setShowCompleteForm(false)
+            setInterviewToComplete(null)
+            setCompleteForm({ status: 'Passed', feedback: '', rating: 5 })
           }}
         />
       )}
@@ -763,6 +794,86 @@ const InterviewEditModal = ({ interview, evaluators, formData, onFormChange, onS
                   className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700"
                 >
                   Update Interview
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Complete Interview Modal
+const InterviewCompleteModal = ({ interview, formData, onFormChange, onSubmit, onClose }) => {
+  return (
+    <div className="fixed inset-0 z-50 overflow-y-auto">
+      <div className="flex items-center justify-center min-h-screen px-4 pt-4 pb-20 text-center sm:block sm:p-0">
+        <div className="fixed inset-0 transition-opacity bg-gray-500 bg-opacity-75" onClick={onClose}></div>
+        <div className="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full">
+          <div className="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
+            <h3 className="text-2xl font-bold text-gray-900 mb-4">Complete Interview</h3>
+            <p className="text-sm text-gray-600 mb-4">
+              Candidate: <strong>{interview.candidateName}</strong><br />
+              Round: <strong>{interview.roundType}</strong>
+            </p>
+            <form onSubmit={onSubmit} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Status *</label>
+                <select
+                  required
+                  value={formData.status}
+                  onChange={(e) => onFormChange({ ...formData, status: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                >
+                  <option value="Passed">Passed</option>
+                  <option value="Failed">Failed</option>
+                  <option value="No Show">No Show</option>
+                  <option value="Completed">Completed</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Rating *</label>
+                <select
+                  required
+                  value={formData.rating}
+                  onChange={(e) => onFormChange({ ...formData, rating: parseInt(e.target.value) })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                >
+                  <option value={5}>5 - Excellent</option>
+                  <option value={4}>4 - Good</option>
+                  <option value={3}>3 - Average</option>
+                  <option value={2}>2 - Below Average</option>
+                  <option value={1}>1 - Poor</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Feedback *</label>
+                <textarea
+                  required
+                  rows={4}
+                  value={formData.feedback}
+                  onChange={(e) => onFormChange({ ...formData, feedback: e.target.value })}
+                  placeholder="Enter interview feedback..."
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                />
+              </div>
+
+              <div className="flex justify-end space-x-3 pt-4">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700"
+                >
+                  Complete Interview
                 </button>
               </div>
             </form>

@@ -143,7 +143,7 @@ const employeeSchema = new mongoose.Schema({
   },
   profileStatus: {
     type: String,
-    enum: ['Draft', 'Submitted', 'Under Review', 'Approved', 'Rejected'],
+    enum: ['Draft', 'Submitted', 'Under Review', 'Manager Approved', 'Manager Rejected', 'Approved', 'Rejected'],
     default: 'Draft'
   },
   profileSubmittedAt: {

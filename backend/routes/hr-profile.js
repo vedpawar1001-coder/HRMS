@@ -2,6 +2,7 @@ const express = require('express');
 const { protect, authorize } = require('../middleware/auth');
 const HR = require('../models/HR');
 const User = require('../models/User');
+const Employee = require('../models/Employee');
 const router = express.Router();
 
 // Helper function to mask sensitive data
@@ -67,7 +68,6 @@ router.get('/my-profile', protect, authorize('hr', 'admin'), async (req, res) =>
     // For admin users, also check if they have an Employee profile
     if (!hr && req.user.role === 'admin') {
       console.log(`[HR_PROFILE] Checking for Employee profile for admin user`);
-      const Employee = require('../models/Employee');
       const adminEmployee = await Employee.findOne({ userId: req.user._id });
       if (adminEmployee) {
         console.log(`[HR_PROFILE] Found Employee profile for admin: ${adminEmployee._id}, name: ${adminEmployee.personalInfo?.fullName || 'N/A'}`);
@@ -668,9 +668,84 @@ router.post('/upload-document', protect, authorize('hr'), upload.single('documen
       return res.status(404).json({ message: 'HR profile not found' });
     }
     
-    const documentType = req.body.documentType;
+    // Get all fields from request body (multer parses FormData)
+    const documentType = req.body?.documentType;
+    const companyIndexRaw = req.body?.companyIndex;
+    const documentCategoryRaw = req.body?.documentCategory;
+    
+    // Convert to strings and trim - FormData sends everything as strings
+    const companyIndexStr = companyIndexRaw !== undefined && companyIndexRaw !== null 
+                            ? String(companyIndexRaw).trim() 
+                            : null;
+    const documentCategoryStr = documentCategoryRaw !== undefined && documentCategoryRaw !== null
+                                ? String(documentCategoryRaw).trim()
+                                : null;
+    
+    // Check if this is a company document upload (Experience Letter or Salary Slip)
+    const hasCompanyIndexField = companyIndexStr !== null && companyIndexStr !== undefined;
+    const hasCategoryField = documentCategoryStr !== null && documentCategoryStr !== undefined;
+    
+    const isValidCompanyIndex = hasCompanyIndexField && 
+                                companyIndexStr !== '' && 
+                                !isNaN(parseInt(companyIndexStr, 10)) && 
+                                parseInt(companyIndexStr, 10) >= 0;
+    const isValidCategory = hasCategoryField && 
+                            documentCategoryStr !== '' &&
+                            (documentCategoryStr === 'experienceLetter' || documentCategoryStr === 'salarySlip');
+    
+    const isCompanyDocument = isValidCompanyIndex && isValidCategory;
+    
+    // PROCESS COMPANY DOCUMENT UPLOAD (Experience Letter or Salary Slip)
+    if (isCompanyDocument) {
+      const companyIdx = parseInt(companyIndexStr, 10);
+      
+      // Ensure previousCompanies array exists
+      if (!hr.employmentInfo.previousCompanies) {
+        hr.employmentInfo.previousCompanies = [];
+      }
+      
+      // Ensure the company exists at this index
+      if (companyIdx >= hr.employmentInfo.previousCompanies.length) {
+        return res.status(400).json({ 
+          message: 'Failed to create company entry. Please add the company information first and save it before uploading documents.' 
+        });
+      }
+      
+      const fileUrl = `/uploads/hr/${req.user._id}/${req.file.filename}`;
+      
+      // Update the specific company document
+      if (documentCategoryStr === 'experienceLetter') {
+        hr.employmentInfo.previousCompanies[companyIdx].experienceLetter = fileUrl;
+      } else if (documentCategoryStr === 'salarySlip') {
+        hr.employmentInfo.previousCompanies[companyIdx].salarySlip = fileUrl;
+      } else {
+        return res.status(400).json({ message: 'Invalid document category. Use experienceLetter or salarySlip' });
+      }
+      
+      hr.addActivityLog('Company Document Uploaded', `previousCompanies[${companyIdx}].${documentCategoryStr}`, null, documentCategoryStr, req.user._id);
+      await hr.save();
+      
+      const updatedCompany = hr.employmentInfo.previousCompanies[companyIdx];
+      
+      return res.json({
+        message: `${documentCategoryStr === 'experienceLetter' ? 'Experience Letter' : 'Salary Slip'} uploaded and saved successfully`,
+        url: fileUrl,
+        companyIndex: companyIdx,
+        documentCategory: documentCategoryStr,
+        company: {
+          companyName: updatedCompany?.companyName,
+          experienceLetter: updatedCompany?.experienceLetter || '',
+          salarySlip: updatedCompany?.salarySlip || ''
+        }
+      });
+    }
+    
+    // REGULAR DOCUMENT UPLOAD (general documents)
+    // Only require documentType if this is NOT a company document upload
     if (!documentType) {
-      return res.status(400).json({ message: 'Document type is required' });
+      return res.status(400).json({ 
+        message: 'Document type is required. If uploading for a company, ensure companyIndex and documentCategory are provided correctly.'
+      });
     }
     
     const fileUrl = `/uploads/hr/${req.user._id}/${req.file.filename}`;
@@ -754,7 +829,7 @@ router.post('/submit', protect, authorize('hr'), async (req, res) => {
       });
     }
     
-    // Update status to Submitted
+    // Update status to Submitted (waiting for manager approval)
     hr.profileStatus = 'Submitted';
     hr.profileSubmittedAt = new Date();
     
@@ -763,14 +838,470 @@ router.post('/submit', protect, authorize('hr'), async (req, res) => {
     
     await hr.save();
     
+    // Check if HR has a reporting manager (via Employee profile)
+    let hrEmployee = await Employee.findOne({ userId: req.user._id });
+    if (hrEmployee && hrEmployee.companyDetails?.reportingManager) {
+      console.log(`[HR_PROFILE_SUBMIT] HR profile submitted, waiting for manager approval. Manager ID: ${hrEmployee.companyDetails.reportingManager}`);
+    } else {
+      console.log(`[HR_PROFILE_SUBMIT] HR profile submitted but no reporting manager assigned. Admin/HR approval required.`);
+    }
+    
+    // Automatically create/update Employee profile from HR profile for attendance tracking
+    try {
+      
+      // Check if employee already exists
+      const normalizedEmail = req.user.email.toLowerCase().trim();
+      let employee = await Employee.findOne({ 
+        'personalInfo.email': { $regex: new RegExp(`^${normalizedEmail}$`, 'i') }
+      });
+      
+      // Preserve existing reportingManager if employee exists
+      let existingReportingManager = null;
+      if (employee && employee.companyDetails?.reportingManager) {
+        existingReportingManager = employee.companyDetails.reportingManager;
+        console.log(`[HR_PROFILE_SUBMIT] Preserving existing reportingManager: ${existingReportingManager}`);
+      }
+      
+      if (!employee) {
+        // Create employee profile from HR profile data
+        const year = new Date().getFullYear();
+        let count = await Employee.countDocuments();
+        let employeeId = `EMP-${year}-${String(count + 1).padStart(5, '0')}`;
+        
+        // Check if employeeId already exists
+        let exists = await Employee.findOne({ employeeId });
+        let attempts = 0;
+        while (exists && attempts < 10) {
+          count++;
+          employeeId = `EMP-${year}-${String(count + 1).padStart(5, '0')}`;
+          exists = await Employee.findOne({ employeeId });
+          attempts++;
+        }
+        
+        employee = new Employee({
+          employeeId: employeeId,
+          userId: req.user._id,
+          personalInfo: {
+            fullName: hr.personalInfo?.fullName || req.user.email.split('@')[0],
+            email: hr.personalInfo?.email || normalizedEmail,
+            mobile: hr.personalInfo?.mobile,
+            dateOfBirth: hr.personalInfo?.dateOfBirth,
+            gender: hr.personalInfo?.gender,
+            bloodGroup: hr.personalInfo?.bloodGroup,
+            maritalStatus: hr.personalInfo?.maritalStatus,
+            address: hr.personalInfo?.address,
+            emergencyContact: hr.personalInfo?.emergencyContact
+          },
+          companyDetails: {
+            joiningDate: hr.companyDetails?.joiningDate || new Date(),
+            department: hr.companyDetails?.department || 'Human Resources',
+            designation: hr.companyDetails?.designation || 'HR',
+            workType: hr.companyDetails?.workType || 'WFO',
+            location: hr.companyDetails?.location,
+            employmentStatus: hr.companyDetails?.employmentStatus || 'Active',
+            // Preserve reportingManager if it was set before
+            reportingManager: existingReportingManager
+          },
+          bankDetails: hr.bankDetails || {},
+          employmentInfo: hr.employmentInfo || {}
+        });
+        
+        employee.calculateProfileCompletion();
+        await employee.save();
+        
+        // Link employee to user
+        await User.findByIdAndUpdate(req.user._id, { employeeId: employee._id });
+        
+        console.log(`[HR_PROFILE_SUBMIT] Created Employee profile from HR profile: ${employee._id}, employeeId: ${employee.employeeId}, reportingManager: ${employee.companyDetails?.reportingManager || 'Not set'}`);
+      } else {
+        // Employee exists - update it with latest HR profile data but preserve reportingManager
+        if (existingReportingManager) {
+          employee.companyDetails.reportingManager = existingReportingManager;
+        }
+        
+        // Update employee profile with latest HR data
+        employee.personalInfo = {
+          fullName: hr.personalInfo?.fullName || employee.personalInfo?.fullName || req.user.email.split('@')[0],
+          email: hr.personalInfo?.email || normalizedEmail,
+          mobile: hr.personalInfo?.mobile || employee.personalInfo?.mobile,
+          dateOfBirth: hr.personalInfo?.dateOfBirth || employee.personalInfo?.dateOfBirth,
+          gender: hr.personalInfo?.gender || employee.personalInfo?.gender,
+          bloodGroup: hr.personalInfo?.bloodGroup || employee.personalInfo?.bloodGroup,
+          maritalStatus: hr.personalInfo?.maritalStatus || employee.personalInfo?.maritalStatus,
+          address: hr.personalInfo?.address || employee.personalInfo?.address,
+          emergencyContact: hr.personalInfo?.emergencyContact || employee.personalInfo?.emergencyContact
+        };
+        
+        employee.companyDetails = {
+          ...employee.companyDetails,
+          joiningDate: hr.companyDetails?.joiningDate || employee.companyDetails?.joiningDate || new Date(),
+          department: hr.companyDetails?.department || employee.companyDetails?.department || 'Human Resources',
+          designation: hr.companyDetails?.designation || employee.companyDetails?.designation || 'HR',
+          workType: hr.companyDetails?.workType || employee.companyDetails?.workType || 'WFO',
+          location: hr.companyDetails?.location || employee.companyDetails?.location,
+          employmentStatus: hr.companyDetails?.employmentStatus || employee.companyDetails?.employmentStatus || 'Active',
+          // Preserve reportingManager
+          reportingManager: existingReportingManager || employee.companyDetails?.reportingManager
+        };
+        
+        employee.bankDetails = hr.bankDetails || employee.bankDetails || {};
+        employee.employmentInfo = hr.employmentInfo || employee.employmentInfo || {};
+        
+        employee.markModified('personalInfo');
+        employee.markModified('companyDetails');
+        employee.markModified('bankDetails');
+        employee.markModified('employmentInfo');
+        
+        employee.calculateProfileCompletion();
+        await employee.save();
+        
+        // Link employee to user if not already linked
+        if (!req.user.employeeId || req.user.employeeId.toString() !== employee._id.toString()) {
+          await User.findByIdAndUpdate(req.user._id, { employeeId: employee._id });
+        }
+        
+        console.log(`[HR_PROFILE_SUBMIT] Updated Employee profile from HR profile: ${employee._id}, employeeId: ${employee.employeeId}, reportingManager: ${employee.companyDetails?.reportingManager || 'Not set'}`);
+      }
+    } catch (employeeError) {
+      console.error('[HR_PROFILE_SUBMIT] Error creating/updating Employee profile:', employeeError);
+      console.error('[HR_PROFILE_SUBMIT] Error stack:', employeeError.stack);
+      // Don't fail the submission if Employee profile creation fails
+      // It will be created when HR tries to punch in
+    }
+    
+    // Check if Employee profile has reportingManager set (re-query after potential creation/update)
+    hrEmployee = await Employee.findOne({ userId: req.user._id });
+    const hasReportingManager = hrEmployee && hrEmployee.companyDetails?.reportingManager;
+    
     res.json({
       message: 'HR profile submitted successfully',
       profileStatus: hr.profileStatus,
       submittedAt: hr.profileSubmittedAt,
-      completion: hr.profileCompletion
+      completion: hr.profileCompletion,
+      employeeProfileCreated: !!hrEmployee,
+      reportingManagerSet: hasReportingManager,
+      note: !hasReportingManager ? 'Note: To appear in your manager\'s employee section, please set your reporting manager in your Employee profile.' : undefined
     });
   } catch (error) {
     console.error('Submit HR profile error:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// @route   POST /api/hr-profile/sync-employee-profile
+// @desc    Sync HR profile to Employee profile for attendance tracking
+// @access  Private (HR)
+router.post('/sync-employee-profile', protect, authorize('hr'), async (req, res) => {
+  try {
+    const hr = await HR.findOne({ userId: req.user._id });
+    if (!hr) {
+      return res.status(404).json({ message: 'HR profile not found. Please complete your HR profile first.' });
+    }
+    
+    // Check if employee already exists
+    const normalizedEmail = req.user.email.toLowerCase().trim();
+    let employee = await Employee.findOne({ 
+      'personalInfo.email': { $regex: new RegExp(`^${normalizedEmail}$`, 'i') }
+    });
+    
+    if (employee) {
+      // Employee exists, just link if not already linked
+      if (!req.user.employeeId || req.user.employeeId.toString() !== employee._id.toString()) {
+        await User.findByIdAndUpdate(req.user._id, { employeeId: employee._id });
+        return res.json({
+          message: 'Employee profile already exists and has been linked',
+          employeeId: employee._id,
+          employeeProfileId: employee.employeeId
+        });
+      }
+      return res.json({
+        message: 'Employee profile already linked',
+        employeeId: employee._id,
+        employeeProfileId: employee.employeeId
+      });
+    }
+    
+    // Create employee profile from HR profile data
+    const year = new Date().getFullYear();
+    let count = await Employee.countDocuments();
+    let employeeId = `EMP-${year}-${String(count + 1).padStart(5, '0')}`;
+    
+    // Check if employeeId already exists
+    let exists = await Employee.findOne({ employeeId });
+    let attempts = 0;
+    while (exists && attempts < 10) {
+      count++;
+      employeeId = `EMP-${year}-${String(count + 1).padStart(5, '0')}`;
+      exists = await Employee.findOne({ employeeId });
+      attempts++;
+    }
+    
+    employee = new Employee({
+      employeeId: employeeId,
+      userId: req.user._id,
+      personalInfo: {
+        fullName: hr.personalInfo?.fullName || req.user.email.split('@')[0],
+        email: hr.personalInfo?.email || normalizedEmail,
+        mobile: hr.personalInfo?.mobile,
+        dateOfBirth: hr.personalInfo?.dateOfBirth,
+        gender: hr.personalInfo?.gender,
+        bloodGroup: hr.personalInfo?.bloodGroup,
+        maritalStatus: hr.personalInfo?.maritalStatus,
+        address: hr.personalInfo?.address,
+        emergencyContact: hr.personalInfo?.emergencyContact
+      },
+      companyDetails: {
+        joiningDate: hr.companyDetails?.joiningDate || new Date(),
+        department: hr.companyDetails?.department || 'Human Resources',
+        designation: hr.companyDetails?.designation || 'HR',
+        workType: hr.companyDetails?.workType || 'WFO',
+        location: hr.companyDetails?.location,
+        employmentStatus: hr.companyDetails?.employmentStatus || 'Active'
+      },
+      bankDetails: hr.bankDetails || {},
+      employmentInfo: hr.employmentInfo || {}
+    });
+    
+    employee.calculateProfileCompletion();
+    await employee.save();
+    
+    // Link employee to user
+    await User.findByIdAndUpdate(req.user._id, { employeeId: employee._id });
+    
+    console.log(`[HR_SYNC] Created Employee profile from HR profile: ${employee._id}, employeeId: ${employee.employeeId}`);
+    
+    res.json({
+      message: 'Employee profile created successfully from HR profile',
+      employeeId: employee._id,
+      employeeProfileId: employee.employeeId,
+      employee: {
+        fullName: employee.personalInfo?.fullName,
+        email: employee.personalInfo?.email,
+        department: employee.companyDetails?.department,
+        designation: employee.companyDetails?.designation
+      }
+    });
+  } catch (error) {
+    console.error('Sync HR to Employee profile error:', error);
+    res.status(500).json({ 
+      message: 'Failed to sync Employee profile. Please try again or contact administrator.',
+      error: error.message 
+    });
+  }
+});
+
+// @route   PUT /api/hr-profile/:id/approve
+// @desc    Approve/reject HR profile (Manager/Admin)
+// @access  Private (Manager/Admin)
+router.put('/:id/approve', protect, authorize('manager', 'admin'), async (req, res) => {
+  try {
+    const hr = await HR.findById(req.params.id);
+    if (!hr) {
+      return res.status(404).json({ message: 'HR profile not found' });
+    }
+    
+    const { status, comments } = req.body;
+    
+    // Check if profile is submitted
+    if (hr.profileStatus !== 'Submitted') {
+      return res.status(400).json({ 
+        message: `Profile must be in 'Submitted' status to be approved. Current status: ${hr.profileStatus}`,
+        currentStatus: hr.profileStatus
+      });
+    }
+    
+    if (req.user.role === 'manager') {
+      // Managers can approve all HR profiles
+      const managerEmployee = await Employee.findById(req.user.employeeId);
+      
+      if (!managerEmployee) {
+        return res.status(404).json({ 
+          message: 'Manager profile not found. Please contact HR.',
+          error: 'MANAGER_NOT_FOUND'
+        });
+      }
+      
+      // Manager approval
+      hr.managerApproval = {
+        approvedBy: req.user._id,
+        approvedAt: new Date(),
+        comments: comments || ''
+      };
+      hr.profileStatus = status === 'Approved' ? 'Manager Approved' : 'Manager Rejected';
+      
+      hr.addActivityLog(
+        status === 'Approved' ? 'Profile Manager Approved' : 'Profile Manager Rejected',
+        'profileStatus',
+        'Submitted',
+        hr.profileStatus,
+        req.user._id
+      );
+      
+    } else if (req.user.role === 'admin') {
+      // Admin can approve directly (skip manager approval if needed)
+      hr.profileStatus = status === 'Approved' ? 'Approved' : 'Rejected';
+      
+      hr.addActivityLog(
+        status === 'Approved' ? 'Profile Approved by Admin' : 'Profile Rejected by Admin',
+        'profileStatus',
+        hr.profileStatus === 'Approved' ? 'Submitted' : 'Manager Approved',
+        hr.profileStatus,
+        req.user._id
+      );
+    }
+    
+    await hr.save();
+    
+    res.json({
+      message: `HR profile ${status === 'Approved' ? 'approved' : 'rejected'} successfully`,
+      profile: hr,
+      status: hr.profileStatus
+    });
+  } catch (error) {
+    console.error('Approve HR profile error:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// @route   GET /api/hr-profile/all
+// @desc    Get all HR profiles (Manager/Admin)
+// @access  Private (Manager/Admin)
+router.get('/all', protect, authorize('manager', 'admin'), async (req, res) => {
+  try {
+    console.log(`[HR_PROFILE_ALL] Fetching all HR profiles for ${req.user.role} ${req.user.email}`);
+    const hrProfiles = await HR.find({})
+      .populate('userId', 'email role')
+      .sort({ profileSubmittedAt: -1, createdAt: -1 })
+      .select('-idProofs.aadhaar -idProofs.pan -bankDetails.accountNumber');
+    
+    console.log(`[HR_PROFILE_ALL] Found ${hrProfiles.length} HR profiles`);
+    
+    // Filter out admin users - only show HR users (not admins)
+    // For managers, exclude admin users from HR profiles list
+    let filteredProfiles = hrProfiles;
+    if (req.user.role === 'manager') {
+      // If userId is not populated correctly, fetch user roles
+      const User = require('../models/User');
+      const userIdsToCheck = hrProfiles
+        .filter(hr => !hr.userId || typeof hr.userId === 'string' || !hr.userId.role)
+        .map(hr => hr.userId?._id || hr.userId);
+      
+      let userRolesMap = {};
+      if (userIdsToCheck.length > 0) {
+        const users = await User.find({ _id: { $in: userIdsToCheck } }).select('_id role').lean();
+        users.forEach(user => {
+          userRolesMap[user._id.toString()] = user.role;
+        });
+      }
+      
+      filteredProfiles = hrProfiles.filter(hr => {
+        // Check if the populated userId has role 'hr' (not 'admin')
+        let userRole = null;
+        
+        // Handle different formats of populated userId
+        if (hr.userId) {
+          if (typeof hr.userId === 'object' && hr.userId.role) {
+            userRole = hr.userId.role;
+          } else {
+            // Try to get role from map if userId is an ObjectId
+            const userIdStr = hr.userId._id?.toString() || hr.userId.toString();
+            userRole = userRolesMap[userIdStr];
+          }
+        }
+        
+        // Only include if role is 'hr', exclude 'admin' and any other roles
+        const isHR = userRole === 'hr';
+        if (!isHR) {
+          console.log(`[HR_PROFILE_ALL] Excluding HR profile ${hr._id} (${hr.hrId || 'no-id'}) - User role: ${userRole || 'unknown'}`);
+        }
+        return isHR;
+      });
+      console.log(`[HR_PROFILE_ALL] Filtered to ${filteredProfiles.length} HR profiles (admin excluded) out of ${hrProfiles.length} total`);
+    }
+    
+    // Mask sensitive data for managers
+    const maskedProfiles = filteredProfiles.map(hr => maskHRData(hr, req.user.role));
+    
+    res.json(maskedProfiles);
+  } catch (error) {
+    console.error('[HR_PROFILE_ALL] Get all HR profiles error:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// @route   GET /api/hr-profile/pending-approvals
+// @desc    Get HR profiles pending manager approval
+// @access  Private (Manager/Admin)
+// NOTE: This route must come before /:id to avoid route conflicts
+router.get('/pending-approvals', protect, authorize('manager', 'admin'), async (req, res) => {
+  try {
+    // Managers and Admin can see all HR profiles pending approval
+    const filter = { profileStatus: 'Submitted' };
+    
+    const pendingProfiles = await HR.find(filter)
+      .populate('userId', 'email role')
+      .sort({ profileSubmittedAt: -1 });
+    
+    // Filter out admin users for managers - only show HR users
+    let filteredProfiles = pendingProfiles;
+    if (req.user.role === 'manager') {
+      filteredProfiles = pendingProfiles.filter(hr => {
+        // Check if the populated userId has role 'hr' (not 'admin')
+        let userRole = null;
+        
+        // Handle different formats of populated userId
+        if (hr.userId) {
+          if (typeof hr.userId === 'object' && hr.userId.role) {
+            userRole = hr.userId.role;
+          } else if (typeof hr.userId === 'string') {
+            // If userId is just an ID string, skip this profile
+            console.log(`[HR_PROFILE_PENDING] Warning: userId is string, cannot determine role for HR profile ${hr._id}`);
+            return false;
+          }
+        }
+        
+        // Only include if role is 'hr', exclude 'admin' and any other roles
+        const isHR = userRole === 'hr';
+        if (!isHR) {
+          console.log(`[HR_PROFILE_PENDING] Excluding HR profile ${hr._id} - User role: ${userRole || 'unknown'}`);
+        }
+        return isHR;
+      });
+      console.log(`[HR_PROFILE_PENDING] Filtered to ${filteredProfiles.length} pending HR profiles (admin excluded) out of ${pendingProfiles.length} total`);
+    }
+    
+    res.json(filteredProfiles);
+  } catch (error) {
+    console.error('Get pending HR approvals error:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// @route   GET /api/hr-profile/:id
+// @desc    Get HR profile by ID (Manager/Admin)
+// @access  Private (Manager/Admin)
+// NOTE: This route must come after /all and /pending-approvals to avoid route conflicts
+router.get('/:id', protect, authorize('manager', 'admin'), async (req, res) => {
+  try {
+    // Check if the ID is a valid ObjectId to avoid matching other routes
+    const mongoose = require('mongoose');
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ message: 'Invalid HR profile ID' });
+    }
+    
+    console.log(`[HR_PROFILE_BY_ID] Fetching HR profile ${req.params.id} for ${req.user.role} ${req.user.email}`);
+    const hr = await HR.findById(req.params.id).populate('userId', 'email role');
+    
+    if (!hr) {
+      return res.status(404).json({ message: 'HR profile not found' });
+    }
+    
+    // Mask sensitive data for managers
+    const maskedData = maskHRData(hr, req.user.role);
+    
+    res.json(maskedData);
+  } catch (error) {
+    console.error('[HR_PROFILE_BY_ID] Get HR profile by ID error:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });

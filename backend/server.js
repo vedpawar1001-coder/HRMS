@@ -6,9 +6,6 @@ const connectDB = require('./config/db');
 // Load env vars
 dotenv.config();
 
-// Connect to database
-connectDB();
-
 const app = express();
 
 // Middleware
@@ -19,18 +16,38 @@ app.use(express.urlencoded({ extended: true }));
 app.use('/uploads', express.static('uploads'));
 
 // Routes
-app.use('/api/auth', require('./routes/auth'));
-app.use('/api/profile', require('./routes/profile'));
-app.use('/api/hr-profile', require('./routes/hr-profile'));
-app.use('/api/employees', require('./routes/employees'));
-app.use('/api/attendance', require('./routes/attendance'));
-app.use('/api/leaves', require('./routes/leaves'));
-app.use('/api/payroll', require('./routes/payroll'));
-app.use('/api/performance', require('./routes/performance'));
-app.use('/api/engagement', require('./routes/engagement'));
-app.use('/api/grievances', require('./routes/grievances'));
-app.use('/api/dashboard', require('./routes/dashboard'));
-app.use('/api/recruitment', require('./routes/recruitment'));
+try {
+  console.log('Registering routes...');
+  app.use('/api/auth', require('./routes/auth'));
+  console.log('✓ Auth routes registered');
+  app.use('/api/profile', require('./routes/profile'));
+  console.log('✓ Profile routes registered');
+  app.use('/api/hr-profile', require('./routes/hr-profile'));
+  console.log('✓ HR Profile routes registered');
+  app.use('/api/employees', require('./routes/employees'));
+  console.log('✓ Employees routes registered');
+  app.use('/api/attendance', require('./routes/attendance'));
+  console.log('✓ Attendance routes registered');
+  app.use('/api/leaves', require('./routes/leaves'));
+  console.log('✓ Leaves routes registered');
+  app.use('/api/payroll', require('./routes/payroll'));
+  console.log('✓ Payroll routes registered');
+  app.use('/api/performance', require('./routes/performance'));
+  console.log('✓ Performance routes registered');
+  app.use('/api/engagement', require('./routes/engagement'));
+  console.log('✓ Engagement routes registered');
+  app.use('/api/grievances', require('./routes/grievances'));
+  console.log('✓ Grievances routes registered');
+  app.use('/api/dashboard', require('./routes/dashboard'));
+  console.log('✓ Dashboard routes registered');
+  app.use('/api/recruitment', require('./routes/recruitment'));
+  console.log('✓ Recruitment routes registered');
+  console.log('All routes registered successfully!');
+} catch (error) {
+  console.error('Error registering routes:', error);
+  console.error('Stack:', error.stack);
+  process.exit(1);
+}
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -62,7 +79,29 @@ app.use((req, res) => {
 
 const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+// Start server only after MongoDB connection attempt
+const startServer = async () => {
+  // Attempt to connect to database first
+  const dbConnected = await connectDB();
+  
+  if (!dbConnected) {
+    console.log('');
+    console.log('⚠️  WARNING: MongoDB connection failed, but server will start anyway.');
+    console.log('   Some features may not work until MongoDB is connected.');
+    console.log('');
+  }
+  
+  // Start the Express server
+  app.listen(PORT, () => {
+    console.log(`✓ Server running on port ${PORT}`);
+    console.log(`✓ API available at http://localhost:${PORT}/api`);
+    if (dbConnected) {
+      console.log('✓ Server is ready to handle requests');
+    } else {
+      console.log('⚠️  Server running but MongoDB not connected');
+    }
+  });
+};
+
+startServer();
 

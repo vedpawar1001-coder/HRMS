@@ -23,71 +23,74 @@ router.get('/', protect, async (req, res) => {
       }
       return res.json([ownProfile]); // Return as array for consistency with other roles
     } else if (req.user.role === 'manager') {
-      // Manager can see team members
-      if (!req.user.employeeId) {
-        console.log('[EMPLOYEES] Manager has no employeeId, returning empty array');
-        return res.json([]);
-      }
-      
-      const manager = await Employee.findById(req.user.employeeId);
-      if (!manager) {
-        console.log('[EMPLOYEES] Manager profile not found for employeeId:', req.user.employeeId);
-        return res.json([]);
-      }
-      
-      // Build filter for manager's team members
-      let filter = {
-        'companyDetails.reportingManager': manager._id,
-        _id: { $ne: manager._id } // Exclude manager's own profile from team list
-      };
+      // Manager can see all employees EXCEPT HR employees
+      // HR employees should only appear in the HR Profiles section, not in the Employees section
+      const query = req.query;
+      let filter = {};
       
       // Add optional filters
-      if (req.query.department) {
-        filter['companyDetails.department'] = req.query.department;
+      if (query.department) {
+        filter['companyDetails.department'] = query.department;
       }
       
-      if (req.query.status) {
-        filter['companyDetails.employmentStatus'] = req.query.status;
-      } else {
-        // By default, show active employees (but allow filter to show all)
-        filter['companyDetails.employmentStatus'] = 'Active';
+      if (query.status) {
+        filter['companyDetails.employmentStatus'] = query.status;
       }
       
       // Add search filter if provided
-      if (req.query.search) {
+      if (query.search) {
         filter.$or = [
-          { 'personalInfo.fullName': { $regex: req.query.search, $options: 'i' } },
-          { employeeId: { $regex: req.query.search, $options: 'i' } },
-          { 'personalInfo.email': { $regex: req.query.search, $options: 'i' } }
+          { 'personalInfo.fullName': { $regex: query.search, $options: 'i' } },
+          { employeeId: { $regex: query.search, $options: 'i' } },
+          { 'personalInfo.email': { $regex: query.search, $options: 'i' } }
         ];
       }
       
-      employees = await Employee.find(filter)
-        .select('_id employeeId personalInfo.fullName personalInfo.email companyDetails.department companyDetails.designation companyDetails.employmentStatus companyDetails.reportingManager')
-        .lean()
-        .sort({ 'personalInfo.fullName': 1 }); // Sort alphabetically by name
-      
-      console.log('[EMPLOYEES] Manager query - Team members found:', employees.length);
-      
-      // If no employees found with reportingManager = manager._id, try with employeeId as fallback
-      if (employees.length === 0 && !req.query.search) {
-        console.log('[EMPLOYEES] No employees found with reportingManager = manager._id, trying with employeeId as fallback...');
-        const fallbackFilter = {
-          'companyDetails.reportingManager': manager.employeeId,
-          _id: { $ne: manager._id }
-        };
-        if (req.query.department) fallbackFilter['companyDetails.department'] = req.query.department;
-        if (req.query.status) {
-          fallbackFilter['companyDetails.employmentStatus'] = req.query.status;
-        } else {
-          fallbackFilter['companyDetails.employmentStatus'] = 'Active';
+      // Exclude HR employees from the employee list for managers
+      try {
+        const HR = require('../models/HR');
+        const mongoose = require('mongoose');
+        
+        // Get all HR user IDs to exclude them
+        const allHRProfiles = await HR.find({})
+          .select('userId')
+          .lean();
+        
+        const hrUserIds = allHRProfiles
+          .filter(hr => hr.userId)
+          .map(hr => {
+            // Convert to ObjectId if it's a valid ObjectId string, otherwise keep as is
+            if (mongoose.Types.ObjectId.isValid(hr.userId)) {
+              return mongoose.Types.ObjectId.isValid(hr.userId.toString()) 
+                ? new mongoose.Types.ObjectId(hr.userId.toString())
+                : hr.userId;
+            }
+            return hr.userId;
+          });
+        
+        console.log('[EMPLOYEES] Manager query - HR user IDs to exclude:', hrUserIds.length);
+        
+        // Exclude HR employees from the employee list
+        if (hrUserIds.length > 0) {
+          // Use $nin to exclude HR user IDs (works with both ObjectId and string)
+          filter.userId = { $nin: hrUserIds };
         }
         
-        employees = await Employee.find(fallbackFilter)
-          .select('_id employeeId personalInfo.fullName personalInfo.email companyDetails.department companyDetails.designation companyDetails.employmentStatus')
+        employees = await Employee.find(filter)
+          .select('_id employeeId personalInfo.fullName personalInfo.email companyDetails.department companyDetails.designation companyDetails.employmentStatus companyDetails.reportingManager userId')
+          .lean()
+          .sort({ 'personalInfo.fullName': 1 }); // Sort alphabetically by name
+        
+        console.log('[EMPLOYEES] Manager query - Employees found (HR excluded):', employees.length);
+      } catch (hrError) {
+        console.error('[EMPLOYEES] Error excluding HR employees:', hrError);
+        console.error('[EMPLOYEES] Error stack:', hrError.stack);
+        // Fallback: fetch all employees if HR exclusion fails
+        employees = await Employee.find(filter)
+          .select('_id employeeId personalInfo.fullName personalInfo.email companyDetails.department companyDetails.designation companyDetails.employmentStatus companyDetails.reportingManager userId')
           .lean()
           .sort({ 'personalInfo.fullName': 1 });
-        console.log('[EMPLOYEES] Fallback query - Team members found:', employees.length);
+        console.log('[EMPLOYEES] Manager query - Fallback: All employees found:', employees.length);
       }
     } else {
       // HR/Admin can see all
@@ -383,6 +386,143 @@ router.get('/:id', protect, async (req, res) => {
   } catch (error) {
     console.error('Get employee error:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// @route   PUT /api/employees/:id/approve-profile
+// @desc    Approve/reject employee profile (HR/Admin)
+// @access  Private (HR/Admin)
+router.put('/:id/approve-profile', protect, authorize('hr', 'admin'), async (req, res) => {
+  try {
+    console.log(`[EMPLOYEE_APPROVE] Approval request - Employee ID: ${req.params.id}, User: ${req.user.email}, Role: ${req.user.role}`);
+    const employee = await Employee.findById(req.params.id);
+    if (!employee) {
+      console.log(`[EMPLOYEE_APPROVE] Employee not found: ${req.params.id}`);
+      return res.status(404).json({ message: 'Employee not found' });
+    }
+    
+    console.log(`[EMPLOYEE_APPROVE] Employee found - ID: ${employee._id}, Current Status: ${employee.profileStatus}`);
+    
+    const { status, comments } = req.body;
+    console.log(`[EMPLOYEE_APPROVE] Request body - Status: ${status}, Comments: ${comments || 'none'}`);
+    
+    // Check if profile can be approved (not already approved or rejected)
+    if (employee.profileStatus === 'Approved') {
+      console.log(`[EMPLOYEE_APPROVE] Profile already approved - Current: ${employee.profileStatus}`);
+      return res.status(400).json({ 
+        message: 'Profile is already approved.',
+        currentStatus: employee.profileStatus
+      });
+    }
+    
+    if (employee.profileStatus === 'Rejected') {
+      console.log(`[EMPLOYEE_APPROVE] Profile was rejected - Current: ${employee.profileStatus}`);
+      return res.status(400).json({ 
+        message: 'Profile has been rejected. Employee needs to resubmit the profile.',
+        currentStatus: employee.profileStatus
+      });
+    }
+    
+    // Allow approval from Submitted, Under Review, Manager Approved, or even Draft (if HR wants to approve directly)
+    console.log(`[EMPLOYEE_APPROVE] Status check passed - Current: ${employee.profileStatus || 'Draft'}`);
+    
+    // Update profile status
+    const oldStatus = employee.profileStatus || 'Draft';
+    employee.profileStatus = status === 'Approved' ? 'Approved' : 'Rejected';
+    console.log(`[EMPLOYEE_APPROVE] Updating status from ${oldStatus} to ${employee.profileStatus}`);
+    
+    // Mark modified to ensure Mongoose detects the change
+    employee.markModified('profileStatus');
+    
+    // Add activity log (only if method exists)
+    if (employee.addActivityLog && typeof employee.addActivityLog === 'function') {
+      try {
+        employee.addActivityLog(
+          status === 'Approved' ? 'Profile Approved by HR' : 'Profile Rejected by HR',
+          'profileStatus',
+          oldStatus,
+          employee.profileStatus,
+          req.user._id
+        );
+        employee.markModified('activityLog');
+      } catch (logError) {
+        console.error('Error adding activity log:', logError);
+        // Continue even if activity log fails
+      }
+    }
+    
+    // If approved, mark profile as verified
+    if (status === 'Approved') {
+      // Optionally mark all documents as verified
+      if (employee.documents && employee.documents.length > 0) {
+        let documentsModified = false;
+        employee.documents.forEach(doc => {
+          if (doc.status === 'Pending') {
+            doc.status = 'Verified';
+            doc.verifiedBy = req.user._id;
+            doc.verifiedAt = new Date();
+            documentsModified = true;
+          }
+        });
+        if (documentsModified) {
+          employee.markModified('documents');
+        }
+      }
+    }
+    
+    try {
+      await employee.save();
+      console.log(`[EMPLOYEE_APPROVE] Profile saved successfully - New Status: ${employee.profileStatus}`);
+    } catch (saveError) {
+      console.error('Error saving employee profile:', saveError);
+      if (saveError.name === 'ValidationError') {
+        return res.status(400).json({ 
+          message: 'Validation error while saving profile',
+          error: saveError.message,
+          details: Object.keys(saveError.errors || {}).map(key => ({
+            field: key,
+            message: saveError.errors[key].message
+          }))
+        });
+      }
+      throw saveError;
+    }
+    
+    console.log(`[EMPLOYEE_APPROVE] Success - Employee ${employee.employeeId} profile ${status === 'Approved' ? 'approved' : 'rejected'}`);
+    res.json({
+      message: `Employee profile ${status === 'Approved' ? 'approved' : 'rejected'} successfully`,
+      employee: {
+        _id: employee._id,
+        employeeId: employee.employeeId,
+        profileStatus: employee.profileStatus
+      }
+    });
+  } catch (error) {
+    console.error('Approve employee profile error:', error);
+    console.error('Error details:', {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+      errors: error.errors
+    });
+    
+    // Provide more detailed error messages
+    if (error.name === 'ValidationError') {
+      const validationErrors = Object.keys(error.errors || {}).map(key => ({
+        field: key,
+        message: error.errors[key].message
+      }));
+      return res.status(400).json({ 
+        message: 'Validation error while approving profile',
+        error: error.message,
+        details: validationErrors
+      });
+    }
+    
+    res.status(500).json({ 
+      message: 'Failed to approve employee profile. Please try again.',
+      error: error.message 
+    });
   }
 });
 

@@ -26,11 +26,32 @@ const protect = async (req, res, next) => {
 
 const authorize = (...roles) => {
   return (req, res, next) => {
+    console.log('[AUTHORIZE] Checking authorization:', { 
+      userRole: req.user?.role, 
+      allowedRoles: roles,
+      path: req.path,
+      method: req.method
+    });
+    
+    if (!req.user || !req.user.role) {
+      console.log('[AUTHORIZE] No user or role found');
+      return res.status(401).json({ 
+        message: 'User not authenticated' 
+      });
+    }
+    
     if (!roles.includes(req.user.role)) {
+      console.log('[AUTHORIZE] Access denied:', { 
+        userRole: req.user.role, 
+        allowedRoles: roles,
+        path: req.path 
+      });
       return res.status(403).json({ 
         message: `User role '${req.user.role}' is not authorized to access this route` 
       });
     }
+    
+    console.log('[AUTHORIZE] Access granted for role:', req.user.role);
     next();
   };
 };

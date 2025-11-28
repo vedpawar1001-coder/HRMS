@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import axios from 'axios'
+import toast from 'react-hot-toast'
 import { motion } from 'framer-motion'
 import {
   FiUsers,
@@ -22,7 +23,10 @@ import {
   FiZap,
   FiStar,
   FiEye,
-  FiX
+  FiX,
+  FiUser,
+  FiFileText,
+  FiBriefcase
 } from 'react-icons/fi'
 import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 
@@ -35,6 +39,8 @@ const Dashboard = () => {
   const [employeeProfile, setEmployeeProfile] = useState(null)
   const [managerProfile, setManagerProfile] = useState(null)
   const [announcements, setAnnouncements] = useState([])
+  const [pendingHRProfiles, setPendingHRProfiles] = useState([])
+  const [loadingHRProfiles, setLoadingHRProfiles] = useState(false)
 
   useEffect(() => {
     fetchStats()
@@ -43,6 +49,7 @@ const Dashboard = () => {
       fetchEmployeeProfile()
     } else if (user?.role === 'manager') {
       fetchManagerProfile()
+      fetchPendingHRProfiles()
     } else if (user?.role === 'hr' || user?.role === 'admin') {
       fetchHRProfile()
     }
@@ -102,6 +109,37 @@ const Dashboard = () => {
       setAnnouncements(activeAnnouncements)
     } catch (error) {
       console.error('Error fetching announcements:', error)
+    }
+  }
+
+  const fetchPendingHRProfiles = async () => {
+    if (user?.role !== 'manager') return
+    setLoadingHRProfiles(true)
+    try {
+      const { data } = await axios.get('/api/hr-profile/pending-approvals')
+      setPendingHRProfiles(data || [])
+    } catch (error) {
+      console.error('Error fetching pending HR profiles:', error)
+      setPendingHRProfiles([])
+    } finally {
+      setLoadingHRProfiles(false)
+    }
+  }
+
+  const handleApproveHRProfile = async (hrProfileId, status, comments = '') => {
+    try {
+      await axios.put(`/api/hr-profile/${hrProfileId}/approve`, {
+        status: status === 'Approved' ? 'Approved' : 'Rejected',
+        comments: comments
+      })
+      // Refresh the list
+      fetchPendingHRProfiles()
+      // Show success message
+      toast.success(`HR profile ${status === 'Approved' ? 'approved' : 'rejected'} successfully`)
+    } catch (error) {
+      console.error('Error approving HR profile:', error)
+      const errorMessage = error.response?.data?.message || 'Failed to approve HR profile'
+      toast.error(errorMessage)
     }
   }
 
@@ -174,40 +212,40 @@ const Dashboard = () => {
         <motion.div
           initial={{ opacity: 0, y: -20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 p-8 mb-8 shadow-2xl"
+          className="relative overflow-hidden rounded-xl sm:rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 p-4 sm:p-6 md:p-8 mb-4 sm:mb-6 md:mb-8 shadow-2xl"
         >
           <div className="absolute inset-0 bg-black opacity-10"></div>
           <div className="relative z-10">
-            <div className="flex items-center justify-between flex-wrap gap-4">
-              <div>
-                <h2 className="text-3xl font-bold text-white mb-2">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 sm:gap-6">
+              <div className="flex-1 min-w-0">
+                <h2 className="text-xl sm:text-2xl md:text-3xl font-bold text-white mb-2 break-words">
                   Welcome back, {getDisplayName()}! 👋
                 </h2>
-                <p className="text-blue-100 text-lg">
+                <p className="text-blue-100 text-sm sm:text-base md:text-lg">
                   {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
                 </p>
               </div>
-              <div className="flex items-center space-x-4">
-                <div className="bg-white bg-opacity-20 backdrop-blur-sm rounded-xl px-6 py-4 text-center border border-white border-opacity-30">
-                  <p className="text-white text-sm font-medium mb-1">This Month</p>
-                  <p className="text-3xl font-bold text-white">{monthlyStats.presentDays || 0}/{monthlyStats.totalDays || 0}</p>
+              <div className="flex items-center space-x-2 sm:space-x-3 md:space-x-4 w-full sm:w-auto">
+                <div className="bg-white bg-opacity-20 backdrop-blur-sm rounded-lg sm:rounded-xl px-3 sm:px-4 md:px-6 py-3 sm:py-4 text-center border border-white border-opacity-30 flex-1 sm:flex-none">
+                  <p className="text-white text-xs sm:text-sm font-medium mb-1">This Month</p>
+                  <p className="text-xl sm:text-2xl md:text-3xl font-bold text-white">{monthlyStats.presentDays || 0}/{monthlyStats.totalDays || 0}</p>
                   <p className="text-blue-100 text-xs mt-1">Days Present</p>
                 </div>
-                <div className="bg-white bg-opacity-20 backdrop-blur-sm rounded-xl px-6 py-4 text-center border border-white border-opacity-30">
-                  <p className="text-white text-sm font-medium mb-1">Leave Balance</p>
-                  <p className="text-3xl font-bold text-white">{totalLeaveBalance}</p>
+                <div className="bg-white bg-opacity-20 backdrop-blur-sm rounded-lg sm:rounded-xl px-3 sm:px-4 md:px-6 py-3 sm:py-4 text-center border border-white border-opacity-30 flex-1 sm:flex-none">
+                  <p className="text-white text-xs sm:text-sm font-medium mb-1">Leave Balance</p>
+                  <p className="text-xl sm:text-2xl md:text-3xl font-bold text-white">{totalLeaveBalance}</p>
                   <p className="text-blue-100 text-xs mt-1">Days Available</p>
                 </div>
               </div>
             </div>
           </div>
           {/* Decorative elements */}
-          <div className="absolute top-0 right-0 w-64 h-64 bg-white opacity-5 rounded-full -mr-32 -mt-32"></div>
-          <div className="absolute bottom-0 left-0 w-48 h-48 bg-white opacity-5 rounded-full -ml-24 -mb-24"></div>
+          <div className="absolute top-0 right-0 w-32 h-32 sm:w-48 sm:h-48 md:w-64 md:h-64 bg-white opacity-5 rounded-full -mr-16 sm:-mr-24 md:-mr-32 -mt-16 sm:-mt-24 md:-mt-32"></div>
+          <div className="absolute bottom-0 left-0 w-24 h-24 sm:w-36 sm:h-36 md:w-48 md:h-48 bg-white opacity-5 rounded-full -ml-12 sm:-ml-18 md:-ml-24 -mb-12 sm:-mb-18 md:-mb-24"></div>
         </motion.div>
 
         {/* Enhanced Statistics Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+        <div className="grid grid-cols-1 xs:grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 xs:gap-4 sm:gap-6 mb-4 sm:mb-6 md:mb-8">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -408,7 +446,7 @@ const Dashboard = () => {
         </div>
 
         {/* Charts and Overview Section */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 mb-6 sm:mb-8">
           {/* Monthly Attendance Chart */}
           <motion.div
             initial={{ opacity: 0, x: -20 }}
@@ -820,6 +858,7 @@ const Dashboard = () => {
     const teamMemberStatus = stats?.teamMemberStatus || [];
     const recentLeaves = stats?.recentLeaves || [];
     const recentGrievances = stats?.recentGrievances || [];
+    const recentOffers = stats?.recentOffers || [];
 
     // Calculate attendance percentage with visual indicator
     const attendancePercentage = stats?.attendancePercentage || 0;
@@ -831,27 +870,27 @@ const Dashboard = () => {
         <motion.div
           initial={{ opacity: 0, y: -20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 p-8 mb-8 shadow-2xl"
+          className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 p-4 sm:p-6 md:p-8 mb-6 sm:mb-8 shadow-2xl"
         >
           <div className="absolute inset-0 bg-black opacity-10"></div>
           <div className="relative z-10">
-            <div className="flex items-center justify-between flex-wrap gap-4">
-              <div>
-                <h2 className="text-3xl font-bold text-white mb-2">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div className="flex-1">
+                <h2 className="text-2xl sm:text-3xl font-bold text-white mb-2">
                   Welcome back, {getDisplayName()}! 👋
                 </h2>
-                <p className="text-indigo-100 text-lg">
+                <p className="text-indigo-100 text-sm sm:text-lg">
                   Here's your team overview for today
                 </p>
               </div>
-              <div className="flex items-center space-x-4">
-                <div className="bg-white bg-opacity-20 backdrop-blur-sm rounded-xl px-6 py-4 text-center">
-                  <p className="text-white text-sm font-medium mb-1">Team Size</p>
-                  <p className="text-3xl font-bold text-white">{stats?.teamSize || 0}</p>
+              <div className="flex items-center space-x-2 sm:space-x-4 w-full sm:w-auto">
+                <div className="bg-white bg-opacity-20 backdrop-blur-sm rounded-xl px-4 sm:px-6 py-3 sm:py-4 text-center flex-1 sm:flex-none">
+                  <p className="text-white text-xs sm:text-sm font-medium mb-1">Team Size</p>
+                  <p className="text-2xl sm:text-3xl font-bold text-white">{stats?.teamSize || 0}</p>
                 </div>
-                <div className="bg-white bg-opacity-20 backdrop-blur-sm rounded-xl px-6 py-4 text-center">
-                  <p className="text-white text-sm font-medium mb-1">Active Today</p>
-                  <p className="text-3xl font-bold text-white">{stats?.teamPresent || 0}</p>
+                <div className="bg-white bg-opacity-20 backdrop-blur-sm rounded-xl px-4 sm:px-6 py-3 sm:py-4 text-center flex-1 sm:flex-none">
+                  <p className="text-white text-xs sm:text-sm font-medium mb-1">Active Today</p>
+                  <p className="text-2xl sm:text-3xl font-bold text-white">{stats?.teamPresent || 0}</p>
                 </div>
               </div>
             </div>
@@ -862,7 +901,7 @@ const Dashboard = () => {
         </motion.div>
 
         {/* Enhanced Statistics Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+        <div className="grid grid-cols-1 xs:grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 xs:gap-4 sm:gap-6 mb-4 sm:mb-6 md:mb-8">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -1043,7 +1082,7 @@ const Dashboard = () => {
         </div>
 
         {/* Charts Section */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 mb-6 sm:mb-8">
           {/* Attendance Trend Chart */}
           <motion.div
             initial={{ opacity: 0, x: -20 }}
@@ -1106,25 +1145,27 @@ const Dashboard = () => {
               <FiUsers className="text-purple-500" size={20} />
             </div>
             {departmentData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={300}>
-                <PieChart>
-                  <Pie
-                    data={departmentData}
-                    cx="50%"
-                    cy="50%"
-                    labelLine={false}
-                    label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                    outerRadius={100}
-                    fill="#8884d8"
-                    dataKey="value"
-                  >
-                    {departmentData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip />
-                </PieChart>
-              </ResponsiveContainer>
+              <div className="pb-4">
+                <ResponsiveContainer width="100%" height={300}>
+                  <PieChart>
+                    <Pie
+                      data={departmentData}
+                      cx="50%"
+                      cy="50%"
+                      labelLine={false}
+                      label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                      outerRadius={100}
+                      fill="#8884d8"
+                      dataKey="value"
+                    >
+                      {departmentData.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
             ) : (
               <div className="flex items-center justify-center h-[300px] text-gray-400">
                 <p>No department data available</p>
@@ -1134,7 +1175,7 @@ const Dashboard = () => {
         </div>
 
         {/* Team Member Status & Recent Activities */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6 mb-6 sm:mb-8">
           {/* Team Member Status */}
           <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -1180,7 +1221,14 @@ const Dashboard = () => {
                           )}
                         </div>
                         <div className="flex-1 min-w-0">
-                          <p className="font-semibold text-gray-900 truncate text-base">{member.name || 'Unknown Employee'}</p>
+                          <div className="flex items-center space-x-2">
+                            <p className="font-semibold text-gray-900 truncate text-base">{member.name || 'Unknown Employee'}</p>
+                            {member.isHR && (
+                              <span className="px-2 py-0.5 bg-purple-100 text-purple-700 text-xs font-semibold rounded-full">
+                                👔 HR
+                              </span>
+                            )}
+                          </div>
                           <div className="flex items-center space-x-2 mt-1">
                             <p className="text-sm text-gray-600 truncate">
                               {member.employeeId || 'N/A'}
@@ -1239,7 +1287,7 @@ const Dashboard = () => {
               </div>
               <div className="bg-orange-100 rounded-xl p-3 relative">
                 <FiBell className="text-orange-600" size={24} />
-                {(recentLeaves.length > 0 || recentGrievances.length > 0) && (
+                {(recentLeaves.length > 0 || recentGrievances.length > 0 || recentOffers.length > 0) && (
                   <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
                 )}
               </div>
@@ -1296,33 +1344,102 @@ const Dashboard = () => {
               {/* Recent Grievances */}
               {recentGrievances.length > 0 && (
                 <>
-                  <p className="text-sm font-semibold text-gray-600 uppercase tracking-wide mb-2 mt-4">Grievances</p>
+                  <div className="flex items-center space-x-2 mb-3 mt-4">
+                    <FiAlertCircle className="text-purple-500" size={16} />
+                    <p className="text-sm font-bold text-gray-700 uppercase tracking-wide">Grievances</p>
+                  </div>
                   {recentGrievances.map((grievance, index) => (
-                    <div
+                    <motion.div
                       key={grievance._id || index}
-                      className="p-3 bg-purple-50 rounded-lg border-l-4 border-purple-500"
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: index * 0.1 }}
+                      whileHover={{ scale: 1.02, x: 5 }}
+                      className="p-4 bg-gradient-to-r from-purple-50 to-pink-50 rounded-xl border-l-4 border-purple-500 hover:shadow-md transition-all cursor-pointer group"
                     >
-                      <p className="text-sm font-medium text-gray-900">
-                        {grievance.employeeId?.personalInfo?.fullName || 'Unknown'}
-                      </p>
-                      <p className="text-xs text-gray-600 mt-1 truncate">{grievance.title}</p>
-                      <span className={`inline-block mt-2 px-2 py-1 rounded text-xs font-medium ${
-                        grievance.status === 'Open' || grievance.status === 'In Progress' ? 'bg-red-100 text-red-800' :
-                        'bg-green-100 text-green-800'
-                      }`}>
-                        {grievance.status}
-                      </span>
-                    </div>
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <div className="flex items-center space-x-2 mb-2">
+                            <div className="w-8 h-8 bg-purple-500 rounded-full flex items-center justify-center text-white font-semibold text-sm">
+                              {grievance.employeeId?.personalInfo?.fullName?.charAt(0)?.toUpperCase() || '?'}
+                            </div>
+                            <p className="text-sm font-semibold text-gray-900">
+                              {grievance.employeeId?.personalInfo?.fullName || 'Unknown'}
+                            </p>
+                          </div>
+                          <p className="text-xs text-gray-600 ml-10 truncate">{grievance.title}</p>
+                        </div>
+                        <span className={`px-3 py-1 rounded-full text-xs font-semibold shadow-sm ${
+                          grievance.status === 'Open' || grievance.status === 'In Progress' ? 'bg-red-100 text-red-800 border border-red-200' :
+                          'bg-green-100 text-green-800 border border-green-200'
+                        }`}>
+                          {grievance.status}
+                        </span>
+                      </div>
+                    </motion.div>
                   ))}
                 </>
               )}
               
-              {recentLeaves.length === 0 && recentGrievances.length === 0 && (
+              {/* Recent Offer Letters */}
+              {recentOffers.length > 0 && (
+                <>
+                  <div className="flex items-center space-x-2 mb-3 mt-4">
+                    <FiFileText className="text-green-500" size={16} />
+                    <p className="text-sm font-bold text-gray-700 uppercase tracking-wide">Offer Letters</p>
+                  </div>
+                  {recentOffers.map((offer, index) => (
+                    <motion.div
+                      key={offer._id || index}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: index * 0.1 }}
+                      whileHover={{ scale: 1.02, x: 5 }}
+                      className="p-4 bg-gradient-to-r from-green-50 to-emerald-50 rounded-xl border-l-4 border-green-500 hover:shadow-md transition-all cursor-pointer group"
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <div className="flex items-center space-x-2 mb-2">
+                            <div className="w-8 h-8 bg-green-500 rounded-full flex items-center justify-center text-white font-semibold text-sm">
+                              {offer.candidateInfo?.fullName?.charAt(0)?.toUpperCase() || '?'}
+                            </div>
+                            <p className="text-sm font-semibold text-gray-900">
+                              {offer.candidateInfo?.fullName || 'Unknown Candidate'}
+                            </p>
+                          </div>
+                          <div className="flex items-center space-x-2 text-xs text-gray-600 ml-10">
+                            <FiBriefcase size={12} />
+                            <span>{offer.jobId?.title || 'Position'}</span>
+                            <span>•</span>
+                            <span>{offer.jobId?.department || 'Department'}</span>
+                          </div>
+                          {offer.offerLetter?.joiningDate && (
+                            <div className="flex items-center space-x-2 text-xs text-gray-500 ml-10 mt-1">
+                              <FiCalendar size={12} />
+                              <span>Joining: {new Date(offer.offerLetter.joiningDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+                            </div>
+                          )}
+                        </div>
+                        <span className={`px-3 py-1 rounded-full text-xs font-semibold shadow-sm ${
+                          offer.offerLetter?.status === 'Accepted' ? 'bg-green-100 text-green-800 border border-green-200' :
+                          offer.offerLetter?.status === 'Rejected' ? 'bg-red-100 text-red-800 border border-red-200' :
+                          offer.offerLetter?.status === 'Sent' ? 'bg-blue-100 text-blue-800 border border-blue-200' :
+                          'bg-yellow-100 text-yellow-800 border border-yellow-200'
+                        }`}>
+                          {offer.offerLetter?.status || 'Pending'}
+                        </span>
+                      </div>
+                    </motion.div>
+                  ))}
+                </>
+              )}
+              
+              {recentLeaves.length === 0 && recentGrievances.length === 0 && recentOffers.length === 0 && (
                 <div className="text-center py-12 text-gray-400">
                   <FiBell size={48} className="mx-auto mb-3 opacity-50" />
                   <p className="font-medium mb-1">No recent activities</p>
                   <p className="text-sm text-gray-400">
-                    Recent leave requests and grievances from your team will appear here.
+                    Recent leave requests, grievances, and offer letters from your team will appear here.
                   </p>
                 </div>
               )}
@@ -1416,6 +1533,100 @@ const Dashboard = () => {
             </div>
           </div>
         </motion.div>
+
+        {/* Pending HR Profile Approvals Section */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="card shadow-lg mb-8 border-l-4 border-orange-500"
+        >
+          <div className="flex items-center justify-between mb-6 pb-4 border-b border-gray-200">
+            <div>
+              <h3 className="text-xl font-bold text-gray-800 mb-1">Pending HR Profile Approvals</h3>
+              <p className="text-sm text-gray-500">HR profiles waiting for your approval</p>
+            </div>
+            <div className="bg-orange-100 rounded-xl p-3">
+              <FiUser className="text-orange-600" size={24} />
+            </div>
+          </div>
+          {loadingHRProfiles ? (
+            <div className="flex items-center justify-center py-8">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-600"></div>
+            </div>
+          ) : pendingHRProfiles.length > 0 ? (
+            <div className="space-y-4">
+              {pendingHRProfiles.map((hrProfile) => (
+                <motion.div
+                  key={hrProfile._id}
+                  initial={{ opacity: 0, x: -10 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  className="p-4 bg-gradient-to-r from-orange-50 to-yellow-50 rounded-xl border border-orange-200 hover:shadow-md transition-all"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex-1">
+                      <div className="flex items-center space-x-3 mb-2">
+                        <div className="w-10 h-10 bg-orange-500 rounded-full flex items-center justify-center text-white font-bold">
+                          {hrProfile.personalInfo?.fullName?.charAt(0)?.toUpperCase() || 'H'}
+                        </div>
+                        <div>
+                          <p className="font-semibold text-gray-900">
+                            {hrProfile.personalInfo?.fullName || 'HR User'}
+                          </p>
+                          <p className="text-sm text-gray-600">
+                            {hrProfile.personalInfo?.email || 'N/A'}
+                          </p>
+                          <p className="text-xs text-gray-500 mt-1">
+                            Submitted: {hrProfile.profileSubmittedAt ? new Date(hrProfile.profileSubmittedAt).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'N/A'}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="ml-13 mt-2">
+                        <span className="inline-block px-3 py-1 bg-orange-100 text-orange-800 rounded-full text-xs font-semibold">
+                          Status: {hrProfile.profileStatus}
+                        </span>
+                        <span className="ml-2 inline-block px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-xs font-semibold">
+                          Completion: {hrProfile.profileCompletion || 0}%
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex items-center space-x-2 ml-4">
+                      <button
+                        onClick={() => {
+                          if (confirm('Are you sure you want to approve this HR profile?')) {
+                            handleApproveHRProfile(hrProfile._id, 'Approved', '')
+                          }
+                        }}
+                        className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center space-x-2 shadow-md hover:shadow-lg"
+                        title="Approve HR Profile"
+                      >
+                        <FiCheckCircle size={18} />
+                        <span>Approve</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          const comments = prompt('Please provide a reason for rejection (optional):')
+                          if (comments !== null) {
+                            handleApproveHRProfile(hrProfile._id, 'Rejected', comments || '')
+                          }
+                        }}
+                        className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors flex items-center space-x-2 shadow-md hover:shadow-lg"
+                        title="Reject HR Profile"
+                      >
+                        <FiX size={18} />
+                        <span>Reject</span>
+                      </button>
+                    </div>
+                  </div>
+                </motion.div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-8 text-gray-500">
+              <FiCheckCircle className="mx-auto mb-2 text-green-500" size={32} />
+              <p className="text-sm">No pending HR profile approvals</p>
+            </div>
+          )}
+        </motion.div>
       </>
     )
   }
@@ -1426,11 +1637,12 @@ const Dashboard = () => {
     const employeeStatus = stats?.employeeStatus || [];
     const recentLeaves = stats?.recentLeaves || [];
     const recentGrievances = stats?.recentGrievances || [];
+    const recentOffers = stats?.recentOffers || [];
 
     return (
       <>
         {/* Enhanced Statistics Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+        <div className="grid grid-cols-1 xs:grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 xs:gap-4 sm:gap-6 mb-4 sm:mb-6 md:mb-8">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -1584,7 +1796,7 @@ const Dashboard = () => {
         </div>
 
         {/* Charts Section */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 mb-6 sm:mb-8">
           {/* Attendance Trend Chart */}
           <motion.div
             initial={{ opacity: 0, x: -20 }}
@@ -1646,25 +1858,27 @@ const Dashboard = () => {
               <FiUsers className="text-purple-500" size={20} />
             </div>
             {departmentData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={300}>
-                <PieChart>
-                  <Pie
-                    data={departmentData}
-                    cx="50%"
-                    cy="50%"
-                    labelLine={false}
-                    label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                    outerRadius={100}
-                    fill="#8884d8"
-                    dataKey="value"
-                  >
-                    {departmentData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip />
-                </PieChart>
-              </ResponsiveContainer>
+              <div className="pb-4">
+                <ResponsiveContainer width="100%" height={300}>
+                  <PieChart>
+                    <Pie
+                      data={departmentData}
+                      cx="50%"
+                      cy="50%"
+                      labelLine={false}
+                      label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                      outerRadius={100}
+                      fill="#8884d8"
+                      dataKey="value"
+                    >
+                      {departmentData.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
             ) : (
               <div className="flex items-center justify-center h-[300px] text-gray-400">
                 <p>No department data available</p>
@@ -1801,12 +2015,45 @@ const Dashboard = () => {
                 </>
               )}
               
-              {recentLeaves.length === 0 && recentGrievances.length === 0 && (
+              {/* Recent Offer Letters */}
+              {recentOffers.length > 0 && (
+                <>
+                  <p className="text-sm font-semibold text-gray-600 uppercase tracking-wide mb-2 mt-4">Offer Letters</p>
+                  {recentOffers.map((offer, index) => (
+                    <div
+                      key={offer._id || index}
+                      className="p-3 bg-green-50 rounded-lg border-l-4 border-green-500"
+                    >
+                      <p className="text-sm font-medium text-gray-900">
+                        {offer.candidateInfo?.fullName || 'Unknown Candidate'}
+                      </p>
+                      <p className="text-xs text-gray-600 mt-1">
+                        {offer.jobId?.title || 'Position'} • {offer.jobId?.department || 'Department'}
+                      </p>
+                      {offer.offerLetter?.joiningDate && (
+                        <p className="text-xs text-gray-500 mt-1">
+                          Joining: {new Date(offer.offerLetter.joiningDate).toLocaleDateString('en-GB')}
+                        </p>
+                      )}
+                      <span className={`inline-block mt-2 px-2 py-1 rounded text-xs font-medium ${
+                        offer.offerLetter?.status === 'Accepted' ? 'bg-green-100 text-green-800' :
+                        offer.offerLetter?.status === 'Rejected' ? 'bg-red-100 text-red-800' :
+                        offer.offerLetter?.status === 'Sent' ? 'bg-blue-100 text-blue-800' :
+                        'bg-yellow-100 text-yellow-800'
+                      }`}>
+                        {offer.offerLetter?.status || 'Pending'}
+                      </span>
+                    </div>
+                  ))}
+                </>
+              )}
+              
+              {recentLeaves.length === 0 && recentGrievances.length === 0 && recentOffers.length === 0 && (
                 <div className="text-center py-12 text-gray-400">
                   <FiBell size={48} className="mx-auto mb-3 opacity-50" />
                   <p className="font-medium mb-1">No recent activities</p>
                   <p className="text-sm text-gray-400">
-                    Recent leave requests and grievances will appear here.
+                    Recent leave requests, grievances, and offer letters will appear here.
                   </p>
                 </div>
               )}
@@ -1821,7 +2068,7 @@ const Dashboard = () => {
           className="card bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 text-white shadow-xl"
         >
           <h3 className="text-lg font-semibold mb-4">Quick Actions</h3>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 sm:gap-4">
             <a
               href="/employees"
               className="bg-white bg-opacity-20 hover:bg-opacity-30 rounded-lg p-4 text-center transition-all transform hover:scale-105"
@@ -1913,7 +2160,7 @@ const Dashboard = () => {
         </motion.div>
 
         {/* Enhanced Statistics Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+        <div className="grid grid-cols-1 xs:grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 xs:gap-4 sm:gap-6 mb-4 sm:mb-6 md:mb-8">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -2156,7 +2403,7 @@ const Dashboard = () => {
         </div>
 
         {/* Charts Section */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 mb-6 sm:mb-8">
           {/* Attendance Trend Chart */}
           <motion.div
             initial={{ opacity: 0, x: -20 }}
@@ -2233,26 +2480,28 @@ const Dashboard = () => {
               </div>
             </div>
             {departmentData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={300}>
-                <PieChart>
-                  <Pie
-                    data={departmentData}
-                    cx="50%"
-                    cy="50%"
-                    labelLine={false}
-                    label={({ name, value }) => `${name}: ${value}`}
-                    outerRadius={100}
-                    fill="#8884d8"
-                    dataKey="value"
-                  >
-                    {departmentData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip />
-                  <Legend />
-                </PieChart>
-              </ResponsiveContainer>
+              <div className="pb-4">
+                <ResponsiveContainer width="100%" height={300}>
+                  <PieChart margin={{ top: 10, right: 10, bottom: 10, left: 10 }}>
+                    <Pie
+                      data={departmentData}
+                      cx="50%"
+                      cy="50%"
+                      labelLine={false}
+                      label={({ name, value }) => `${name}: ${value}`}
+                      outerRadius={100}
+                      fill="#8884d8"
+                      dataKey="value"
+                    >
+                      {departmentData.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip />
+                    <Legend wrapperStyle={{ paddingTop: '20px' }} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
             ) : (
               <div className="flex items-center justify-center h-[300px] text-gray-400">
                 <div className="text-center">

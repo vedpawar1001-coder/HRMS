@@ -183,9 +183,33 @@ router.get('/', protect, async (req, res) => {
       } else if (req.query.viewTeam === 'true') {
         // View team members' leaves for approval
         const manager = await Employee.findById(req.user.employeeId);
+        if (!manager) {
+          return res.status(404).json({ 
+            message: 'Manager profile not found. Please contact HR.',
+            error: 'MANAGER_NOT_FOUND'
+          });
+        }
+        
+        // Find all team members including HR employees who report to this manager
         const teamMembers = await Employee.find({
-          'companyDetails.reportingManager': manager?._id
-        }).select('_id');
+          'companyDetails.reportingManager': manager._id
+        }).select('_id employeeId personalInfo.fullName companyDetails.department companyDetails.designation');
+        
+        console.log(`[LEAVES] Manager ${req.user.email} viewing team leaves. Team members found: ${teamMembers.length}`);
+        if (teamMembers.length > 0) {
+          console.log(`[LEAVES] Team members:`, teamMembers.map(m => ({
+            id: m._id,
+            employeeId: m.employeeId,
+            name: m.personalInfo?.fullName,
+            department: m.companyDetails?.department,
+            designation: m.companyDetails?.designation
+          })));
+        }
+        
+        if (teamMembers.length === 0) {
+          // No team members found, return empty array
+          return res.json([]);
+        }
         
         filter.employeeId = { $in: teamMembers.map(e => e._id) };
         filter.status = { $in: ['Pending', 'Manager Approved'] };
@@ -364,6 +388,39 @@ router.put('/:id/approve', protect, authorize('manager', 'hr', 'admin'), async (
       };
       leave.status = status === 'Approved' ? 'Manager Approved' : 'Manager Rejected';
     } else if (req.user.role === 'hr' || req.user.role === 'admin') {
+      // Check if HR is trying to approve their own leave
+      const Employee = require('../models/Employee');
+      const hrEmployee = await Employee.findById(req.user.employeeId);
+      const leaveEmployee = await Employee.findById(leave.employeeId);
+      
+      if (hrEmployee && leaveEmployee && 
+          hrEmployee._id.toString() === leaveEmployee._id.toString()) {
+        return res.status(403).json({ 
+          message: 'You cannot approve your own leave application. Please contact your manager or admin.',
+          error: 'SELF_APPROVAL_NOT_ALLOWED'
+        });
+      }
+      
+      // HR can only approve leaves that have been manager approved first (or if employee has no manager)
+      // Check if leave needs manager approval first
+      if (leaveEmployee && leaveEmployee.companyDetails?.reportingManager) {
+        // Employee has a manager, so manager approval is required first
+        if (leave.status === 'Pending' && !leave.managerApproval) {
+          return res.status(403).json({ 
+            message: 'This leave requires manager approval first. Please wait for manager approval.',
+            error: 'MANAGER_APPROVAL_REQUIRED'
+          });
+        }
+        
+        // Only allow HR approval if manager has already approved
+        if (leave.status !== 'Manager Approved') {
+          return res.status(403).json({ 
+            message: 'This leave must be approved by the manager first before HR can approve it.',
+            error: 'MANAGER_APPROVAL_PENDING'
+          });
+        }
+      }
+      
       leave.hrApproval = {
         approvedBy: req.user._id,
         approvedAt: new Date(),

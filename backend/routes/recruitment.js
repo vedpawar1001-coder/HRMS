@@ -305,8 +305,8 @@ router.get('/jobs/:id', async (req, res) => {
 
 // @route   POST /api/recruitment/jobs
 // @desc    Create new job posting
-// @access  Private (HR/Admin)
-router.post('/jobs', protect, authorize('hr', 'admin'), async (req, res) => {
+// @access  Private (HR/Admin/Manager)
+router.post('/jobs', protect, authorize('hr', 'admin', 'manager'), async (req, res) => {
   try {
     const job = new Job({
       ...req.body,
@@ -350,6 +350,7 @@ router.delete('/jobs/:id', protect, authorize('hr', 'admin'), async (req, res) =
 });
 
 // ==================== APPLICATION ROUTES ====================
+// IMPORTANT: Specific routes (like /hr-upload) must come BEFORE generic routes (like /applications)
 
 // Test route to verify server is running
 router.get('/applications/test', (req, res) => {
@@ -357,18 +358,46 @@ router.get('/applications/test', (req, res) => {
 });
 
 // Test route for hr-upload endpoint (GET to verify route exists)
-router.get('/applications/hr-upload/test', protect, authorize('hr', 'admin'), (req, res) => {
+router.get('/applications/hr-upload/test', protect, authorize('hr', 'admin', 'manager'), (req, res) => {
   res.json({ message: 'HR upload route is accessible', timestamp: new Date() });
 });
 
 // @route   POST /api/recruitment/applications/hr-upload
-// @desc    HR manually uploads application with resume parsing
-// @access  Private (HR/Admin)
-router.post('/applications/hr-upload', protect, authorize('hr', 'admin'), recruitmentUpload.single('resume'), async (req, res) => {
+// @desc    HR/Manager manually uploads application with resume parsing
+// @access  Private (HR/Admin/Manager)
+// IMPORTANT: This route MUST come before router.post('/applications') to avoid route conflicts
+router.post('/applications/hr-upload', 
+  protect, 
+  (req, res, next) => {
+    console.log('[HR_UPLOAD_MIDDLEWARE] User authenticated:', req.user?.role, req.user?.email);
+    next();
+  },
+  authorize('hr', 'admin', 'manager'), 
+  (req, res, next) => {
+    console.log('[HR_UPLOAD_MIDDLEWARE] Authorization passed for role:', req.user?.role);
+    next();
+  },
+  (req, res, next) => {
+    // Multer error handling middleware
+    recruitmentUpload.single('resume')(req, res, (err) => {
+      if (err) {
+        console.error('[HR_UPLOAD] Multer error:', err);
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return res.status(400).json({ message: 'File size exceeds 10MB limit' });
+        }
+        if (err.message && err.message.includes('Invalid file type')) {
+          return res.status(400).json({ message: err.message });
+        }
+        return res.status(400).json({ message: `File upload error: ${err.message || 'Unknown error'}` });
+      }
+      next();
+    });
+  },
+  async (req, res) => {
   try {
-    console.log('HR Upload - Request received');
-    console.log('Request body:', req.body);
-    console.log('Request file:', req.file ? { filename: req.file.filename, size: req.file.size } : 'No file');
+    console.log('[HR_UPLOAD] Request received from:', req.user.role, req.user.email);
+    console.log('[HR_UPLOAD] Request body:', req.body);
+    console.log('[HR_UPLOAD] Request file:', req.file ? { filename: req.file.filename, size: req.file.size } : 'No file');
     
     const { 
       fullName, 
@@ -479,13 +508,19 @@ router.post('/applications/hr-upload', protect, authorize('hr', 'admin'), recrui
       }
       
       try {
-        const screeningResult = calculateScreeningScore(application.candidateInfo, job);
+        // Convert job to plain object if it's a Mongoose document
+        const jobData = job.toObject ? job.toObject() : job;
+        const screeningResult = calculateScreeningScore(application.candidateInfo, jobData);
         application.screening = {
           ...screeningResult,
           screeningDate: new Date()
         };
       } catch (screeningError) {
         console.error('HR Upload - Error calculating screening score:', screeningError);
+        console.error('Screening error details:', {
+          message: screeningError.message,
+          stack: screeningError.stack
+        });
         // Continue without screening if calculation fails
         application.screening = {
           result: 'Needs Manual Review',
@@ -501,11 +536,12 @@ router.post('/applications/hr-upload', protect, authorize('hr', 'admin'), recrui
     }
 
     // Add initial status to history
+    const uploadedBy = req.user.role === 'manager' ? 'Manager' : 'HR';
     application.statusHistory.push({
       status: 'Application',
       updatedBy: req.user._id,
       updatedDate: new Date(),
-      comments: 'Application uploaded by HR',
+      comments: `Application uploaded by ${uploadedBy}`,
       timestamp: new Date()
     });
 
@@ -525,9 +561,40 @@ router.post('/applications/hr-upload', protect, authorize('hr', 'admin'), recrui
   } catch (error) {
     console.error('HR upload application error:', error);
     console.error('Error stack:', error.stack);
+    console.error('Error name:', error.name);
+    console.error('Error details:', {
+      message: error.message,
+      code: error.code,
+      errors: error.errors
+    });
+    
+    // Handle specific error types
+    if (error.name === 'ValidationError') {
+      const validationErrors = Object.values(error.errors || {}).map(err => err.message).join(', ');
+      return res.status(400).json({ 
+        message: `Validation error: ${validationErrors || error.message}`,
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    }
+    
+    if (error.name === 'MulterError') {
+      if (error.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ message: 'File size exceeds 10MB limit' });
+      }
+      return res.status(400).json({ message: `File upload error: ${error.message}` });
+    }
+    
+    // Handle MongoDB errors
+    if (error.name === 'MongoError' || error.code === 11000) {
+      return res.status(400).json({ 
+        message: 'Duplicate entry detected. This application may already exist.',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    }
+    
     res.status(500).json({ 
-      message: 'Server error', 
-      error: error.message,
+      message: error.message || 'Server error occurred while processing your request. Please try again.',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
       stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
@@ -782,6 +849,45 @@ router.get('/applications', protect, authorize('hr', 'admin', 'manager'), async 
   try {
     const filter = {};
     
+    // For managers, only show applications where they are the reporting manager
+    let managerReportingManagerFilter = null;
+    if (req.user.role === 'manager') {
+      if (!req.user.employeeId) {
+        console.log('[RECRUITMENT] Manager has no employeeId, returning empty array');
+        return res.json([]);
+      }
+      
+      const manager = await Employee.findById(req.user.employeeId);
+      if (!manager) {
+        console.log('[RECRUITMENT] Manager profile not found for employeeId:', req.user.employeeId);
+        return res.json([]);
+      }
+      
+      const mongoose = require('mongoose');
+      const managerEmployeeId = manager._id;
+      let managerObjectId;
+      
+      if (managerEmployeeId instanceof mongoose.Types.ObjectId) {
+        managerObjectId = managerEmployeeId;
+      } else if (mongoose.Types.ObjectId.isValid(managerEmployeeId)) {
+        managerObjectId = new mongoose.Types.ObjectId(managerEmployeeId);
+      } else {
+        managerObjectId = managerEmployeeId;
+      }
+      
+      // Filter to only show applications where manager is the reporting manager
+      managerReportingManagerFilter = {
+        $or: [
+          { 'offerLetter.reportingManager': managerObjectId },
+          { 'offerLetter.reportingManager': managerEmployeeId.toString() },
+          { 'offerLetter.reportingManager': String(managerEmployeeId) }
+        ],
+        'offerLetter': { $exists: true, $ne: null }
+      };
+      
+      console.log(`[RECRUITMENT] Manager ${req.user.email} fetching applications with reportingManager: ${managerEmployeeId}`);
+    }
+    
     if (req.query.status) {
       filter.status = req.query.status;
     }
@@ -810,12 +916,35 @@ router.get('/applications', protect, authorize('hr', 'admin', 'manager'), async 
       filter.inTalentPool = true;
     }
 
-    const applications = await Application.find(filter)
+    // Combine manager filter with other filters
+    let finalFilter = { ...filter };
+    if (managerReportingManagerFilter) {
+      // Merge the manager filter conditions
+      finalFilter = {
+        ...filter,
+        $and: [
+          { $or: managerReportingManagerFilter.$or },
+          { 'offerLetter': managerReportingManagerFilter['offerLetter'] }
+        ]
+      };
+      
+      // If there's a search $or, we need to handle it properly
+      if (filter.$or) {
+        // Search $or should be combined with manager filter using $and
+        finalFilter.$and.push({ $or: filter.$or });
+        delete finalFilter.$or;
+      }
+    }
+
+    const applications = await Application.find(finalFilter)
       .populate('jobId', 'title department')
       .populate('interviewRounds.evaluator', 'email')
-      .populate('offerLetter.reportingManager', 'personalInfo.fullName')
-      .sort({ 'candidateInfo.appliedDate': -1 });
+      .populate('offerLetter.reportingManager', 'personalInfo.fullName employeeId')
+      .sort({ 'offerLetter.generatedDate': -1, 'candidateInfo.appliedDate': -1 })
+      .lean();
 
+    console.log(`[RECRUITMENT] Found ${applications.length} applications for ${req.user.role} ${req.user.email}`);
+    
     res.json(applications);
   } catch (error) {
     console.error('Get applications error:', error);
@@ -934,8 +1063,8 @@ router.post('/applications/:id/screening', protect, authorize('hr', 'admin'), as
 
 // @route   POST /api/recruitment/applications/:id/interviews
 // @desc    Schedule interview
-// @access  Private (HR/Admin)
-router.post('/applications/:id/interviews', protect, authorize('hr', 'admin'), async (req, res) => {
+// @access  Private (HR/Admin/Manager)
+router.post('/applications/:id/interviews', protect, authorize('hr', 'admin', 'manager'), async (req, res) => {
   try {
     const { roundType, scheduledDate, scheduledTime, evaluator, mode, meetingLink, venue } = req.body;
 
@@ -1099,8 +1228,8 @@ router.put('/applications/:id/current-round', protect, authorize('hr', 'admin'),
 
 // @route   PUT /api/recruitment/applications/:id/interviews/:interviewId
 // @desc    Update interview (reschedule, complete, add feedback)
-// @access  Private (HR/Admin)
-router.put('/applications/:id/interviews/:interviewId', protect, authorize('hr', 'admin'), async (req, res) => {
+// @access  Private (HR/Admin/Manager)
+router.put('/applications/:id/interviews/:interviewId', protect, authorize('hr', 'admin', 'manager'), async (req, res) => {
   try {
     const { status, feedback, rating, scheduledDate, scheduledTime, meetingLink, venue, noShowReason } = req.body;
 
@@ -1404,6 +1533,17 @@ router.post('/applications/:id/generate-offer', protect, authorize('hr', 'admin'
 
     const offerUrl = `/uploads/recruitment/offers/${fileName}`;
 
+    // Ensure reportingManager is stored as ObjectId if provided
+    const mongoose = require('mongoose');
+    let reportingManagerId = null;
+    if (reportingManager) {
+      if (mongoose.Types.ObjectId.isValid(reportingManager)) {
+        reportingManagerId = new mongoose.Types.ObjectId(reportingManager);
+      } else {
+        console.warn('[GENERATE_OFFER] Invalid reportingManager ID:', reportingManager);
+      }
+    }
+
     application.offerLetter = {
       templateId,
       generatedDate: new Date(),
@@ -1411,7 +1551,7 @@ router.post('/applications/:id/generate-offer', protect, authorize('hr', 'admin'
       jobTitle,
       salary: parseFloat(salary),
       joiningDate: new Date(joiningDate),
-      reportingManager,
+      reportingManager: reportingManagerId,
       department,
       workType,
       workLocation,
@@ -1424,6 +1564,8 @@ router.post('/applications/:id/generate-offer', protect, authorize('hr', 'admin'
     };
 
     await application.save();
+    
+    console.log(`[GENERATE_OFFER] Offer letter generated for application ${application._id}, reportingManager: ${reportingManagerId || 'Not set'}`);
 
     res.json({
       message: 'Offer letter generated successfully',
@@ -2064,8 +2206,8 @@ router.get('/lifecycle/:id', protect, authorize('hr', 'admin', 'manager'), async
 
 // @route   GET /api/recruitment/evaluators
 // @desc    Get all evaluators (users with manager, hr, or admin roles)
-// @access  Private (HR/Admin)
-router.get('/evaluators', protect, authorize('hr', 'admin'), async (req, res) => {
+// @access  Private (HR/Admin/Manager)
+router.get('/evaluators', protect, authorize('hr', 'admin', 'manager'), async (req, res) => {
   try {
     const evaluators = await User.find({
       role: { $in: ['manager', 'hr', 'admin'] },

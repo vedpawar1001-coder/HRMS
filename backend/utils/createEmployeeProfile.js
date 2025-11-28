@@ -64,6 +64,18 @@ async function createOrGetEmployeeProfile(user) {
         attempts++;
       }
       
+      // Determine department and designation based on role
+      let department = 'General';
+      let designation = 'Employee';
+      
+      if (user.role === 'manager') {
+        department = 'Management';
+        designation = 'Manager';
+      } else if (user.role === 'hr') {
+        department = 'Human Resources';
+        designation = 'HR';
+      }
+      
       // Create employee with employeeId set
       employee = new Employee({
         employeeId: employeeId, // Set manually to satisfy required constraint
@@ -74,8 +86,8 @@ async function createOrGetEmployeeProfile(user) {
         },
         companyDetails: {
           joiningDate: new Date(),
-          department: 'General',
-          designation: user.role === 'manager' ? 'Manager' : 'Employee',
+          department: department,
+          designation: designation,
           employmentStatus: 'Active'
         }
       });

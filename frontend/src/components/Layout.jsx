@@ -48,14 +48,18 @@ const Layout = () => {
       {/* Mobile sidebar */}
       <div className={`fixed inset-0 z-50 lg:hidden ${sidebarOpen ? '' : 'hidden'}`}>
         <div className="fixed inset-0 bg-gray-600 bg-opacity-75" onClick={() => setSidebarOpen(false)} />
-        <div className="fixed inset-y-0 left-0 flex flex-col w-64 bg-white shadow-xl">
-          <div className="flex items-center justify-between h-16 px-4 border-b">
-            <h1 className="text-xl font-bold text-primary-600">HRMS</h1>
-            <button onClick={() => setSidebarOpen(false)} className="text-gray-500">
-              <FiX size={24} />
+        <div className="fixed inset-y-0 left-0 flex flex-col w-64 sm:w-72 bg-white shadow-xl max-w-[85vw]">
+          <div className="flex items-center justify-between h-14 sm:h-16 px-3 sm:px-4 border-b">
+            <h1 className="text-lg sm:text-xl font-bold text-primary-600">HRMS</h1>
+            <button 
+              onClick={() => setSidebarOpen(false)} 
+              className="text-gray-500 p-2 -mr-2"
+              aria-label="Close menu"
+            >
+              <FiX size={20} className="sm:w-6 sm:h-6" />
             </button>
           </div>
-          <nav className="flex-1 px-4 py-4 space-y-1 overflow-y-auto">
+          <nav className="flex-1 px-3 sm:px-4 py-3 sm:py-4 space-y-1 overflow-y-auto">
             {navigation.map((item) => {
               const Icon = item.icon
               return (
@@ -63,14 +67,14 @@ const Layout = () => {
                   key={item.path}
                   to={item.path}
                   onClick={() => setSidebarOpen(false)}
-                  className={`flex items-center px-4 py-3 text-sm font-medium rounded-lg transition-colors ${
+                  className={`flex items-center px-3 sm:px-4 py-2.5 sm:py-3 text-sm font-medium rounded-lg transition-colors min-h-[44px] ${
                     isActive(item.path)
                       ? 'bg-primary-50 text-primary-600'
-                      : 'text-gray-700 hover:bg-gray-100'
+                      : 'text-gray-700 hover:bg-gray-100 active:bg-gray-200'
                   }`}
                 >
-                  <Icon className="mr-3" size={20} />
-                  {item.name}
+                  <Icon className="mr-2 sm:mr-3 flex-shrink-0" size={18} />
+                  <span className="truncate">{item.name}</span>
                 </Link>
               )
             })}
@@ -124,29 +128,31 @@ const Layout = () => {
       {/* Main content */}
       <div className="lg:pl-64">
         {/* Top bar */}
-        <div className="sticky top-0 z-10 flex items-center justify-between h-16 px-4 bg-white border-b border-gray-200">
+        <div className="sticky top-0 z-10 flex items-center justify-between h-14 sm:h-16 px-3 sm:px-4 bg-white border-b border-gray-200">
           <button
             onClick={() => setSidebarOpen(true)}
-            className="lg:hidden text-gray-500"
+            className="lg:hidden text-gray-500 p-2 -ml-2"
+            aria-label="Open menu"
           >
-            <FiMenu size={24} />
+            <FiMenu size={20} className="sm:w-6 sm:h-6" />
           </button>
-          <div className="flex items-center space-x-4 ml-auto">
-            <div className="text-right">
-              <p className="text-sm font-medium text-gray-900">{user?.email}</p>
+          <div className="flex items-center space-x-2 sm:space-x-4 ml-auto">
+            <div className="text-right hidden xs:block">
+              <p className="text-xs sm:text-sm font-medium text-gray-900 truncate max-w-[120px] sm:max-w-none">{user?.email}</p>
               <p className="text-xs text-gray-500 capitalize">{user?.role}</p>
             </div>
             <button
               onClick={logout}
               className="lg:hidden p-2 text-gray-500 hover:text-red-600"
+              aria-label="Logout"
             >
-              <FiLogOut size={20} />
+              <FiLogOut size={18} className="sm:w-5 sm:h-5" />
             </button>
           </div>
         </div>
 
         {/* Page content */}
-        <main className="p-6">
+        <main className="p-3 sm:p-4 md:p-6 max-w-full overflow-x-hidden">
           <Outlet />
         </main>
       </div>
